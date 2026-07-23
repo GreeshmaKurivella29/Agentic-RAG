@@ -39,7 +39,6 @@ Use `--allow-domain` only after independently confirming that the domain is an o
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-Copy-Item .env.example .env
 # add GROQ_API_KEY to .env
 streamlit run app.py
 ```
