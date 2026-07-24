@@ -85,3 +85,4 @@ Add it from the Source library, then re-run your question. The ingestor intentio
 - `ingest.py` — guarded single-page ingestion tool
 - `trusted_sources.py` — source allowlist and document extraction/chunking
 - `data/demo_legal_corpus.jsonl` — small illustrative seed corpus; replace/augment with vetted primary material
+ 
