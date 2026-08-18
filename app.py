@@ -10,7 +10,8 @@ from dotenv import load_dotenv
 
 from rag_engine import LegalRetriever, load_corpus, run_agent, source_summary
 from trusted_sources import ingest_trusted_url
-
+from pdf_ingestor import DuplicatePDFError, ingest_pdf, preview_pdf
+from pdf_parser import PDFIngestionError
 load_dotenv()
 
 st.set_page_config(
@@ -347,8 +348,9 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 
-workspace_tab, library_tab, about_tab = st.tabs(["Research workspace", "Source library", "How to use this"])
-
+workspace_tab, library_tab, kb_tab, about_tab = st.tabs(
+    ["Research workspace", "Source library", "Knowledge Base", "How to use this"]
+)
 # ──────────────────────────────────────────────────────────────────────────────
 with workspace_tab:
     if "pending_question" not in st.session_state:
@@ -685,6 +687,205 @@ with library_tab:
                     st.info("That page is already indexed; no new chunks were added.")
             except Exception as exc:
                 st.error(f"Could not add this source: {exc}")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
+# KNOWLEDGE BASE — PDF INGESTION
+with kb_tab:
+    st.markdown(
+        "<h2 style='font-family:\"Playfair Display\",serif;'>Knowledge Base</h2>",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        "Upload official legal PDFs to expand NyayaRoute's searchable knowledge base."
+    )
+
+    uploaded_files = st.file_uploader(
+        "Upload legal PDF(s)",
+        type=["pdf"],
+        accept_multiple_files=True,
+        help="Acts, Constitution, judgments, Gazette notifications, Law Commission reports, etc.",
+    )
+
+    if uploaded_files:
+
+        for uploaded_file in uploaded_files:
+
+            st.markdown("---")
+            st.markdown(f"### {uploaded_file.name}")
+
+            file_bytes = uploaded_file.getvalue()
+
+            # ── Preview ──────────────────────────────────────────────────────
+            try:
+                parsed, profile, structure_kind, chunks = preview_pdf(
+                    file_bytes,
+                    uploaded_file.name,
+                )
+
+                st.success("PDF successfully parsed.")
+
+                # Document metadata
+                st.markdown("#### Detected metadata")
+
+                metadata_col1, metadata_col2 = st.columns(2)
+
+                with metadata_col1:
+                    st.write(f"**Document kind:** {profile.kind}")
+                    st.write(f"**Act:** {profile.act}")
+                    st.write(f"**Year:** {profile.year}")
+
+                with metadata_col2:
+                    st.write(f"**Source:** {profile.source}")
+                    st.write(f"**Court:** {profile.court}")
+                    st.write(f"**Structure:** {structure_kind}")
+
+                # PDF statistics
+                stat1, stat2, stat3 = st.columns(3)
+
+                with stat1:
+                    st.metric("Pages", parsed.num_pages_total)
+
+                with stat2:
+                    st.metric("Pages used", parsed.num_pages_used)
+
+                with stat3:
+                    st.metric("Chunks", len(chunks))
+
+                # ── Metadata preview ─────────────────────────────────────────
+                with st.expander("Preview extracted chunks"):
+
+                    for i, chunk in enumerate(chunks[:5], start=1):
+
+                        st.markdown(f"**Chunk {i}**")
+
+                        st.write(
+                            f"Structure: {chunk.structure_kind}"
+                        )
+
+                        if chunk.part:
+                            st.write(f"Part: {chunk.part}")
+
+                        if chunk.chapter:
+                            st.write(f"Chapter: {chunk.chapter}")
+
+                        if chunk.article:
+                            st.write(f"Article: {chunk.article}")
+
+                        if chunk.section:
+                            st.write(f"Section: {chunk.section}")
+
+                        if chunk.heading:
+                            st.write(f"Heading: {chunk.heading}")
+
+                        st.text_area(
+                            "Text",
+                            chunk.text,
+                            height=150,
+                            key=f"preview_{uploaded_file.name}_{i}",
+                        )
+
+                        st.markdown("---")
+
+                # ── Classification override ─────────────────────────────────
+                with st.expander("Override detected classification (optional)"):
+
+                    source_override = st.text_input(
+                        "Source",
+                        value=profile.source,
+                        key=f"source_{uploaded_file.name}",
+                    )
+
+                    act_override = st.text_input(
+                        "Act / document name",
+                        value=profile.act,
+                        key=f"act_{uploaded_file.name}",
+                    )
+
+                # ── Index button ────────────────────────────────────────────
+                if st.button(
+                    f"Index {uploaded_file.name}",
+                    type="primary",
+                    key=f"index_{uploaded_file.name}",
+                ):
+
+                    try:
+
+                        progress = st.progress(0)
+
+                        progress.progress(20)
+
+                        result = ingest_pdf(
+                            file_bytes,
+                            uploaded_file.name,
+                            source_override=source_override or None,
+                            act_override=act_override or None,
+                        )
+
+                        progress.progress(100)
+
+                        st.success(
+                            f"Successfully indexed {result.filename}: "
+                            f"{result.chunks_created} chunks created."
+                        )
+
+                        # Results
+                        result_col1, result_col2, result_col3 = st.columns(3)
+
+                        with result_col1:
+                            st.metric(
+                                "Chunks created",
+                                result.chunks_created,
+                            )
+
+                        with result_col2:
+                            st.metric(
+                                "Duplicates skipped",
+                                result.chunks_skipped_duplicate,
+                            )
+
+                        with result_col3:
+                            st.metric(
+                                "Pages used",
+                                result.pages_used,
+                            )
+
+                        if result.chunks_created == 0:
+
+                            st.info(
+                                "That PDF was already indexed; no new chunks were added."
+                            )
+
+                    except DuplicatePDFError:
+
+                        st.warning(
+                            "This PDF has already been indexed."
+                        )
+
+                    except PDFIngestionError as exc:
+
+                        st.error(
+                            f"Could not process this PDF: {exc}"
+                        )
+
+                    except Exception as exc:
+
+                        st.error(
+                            f"Unexpected indexing error: {exc}"
+                        )
+
+            except PDFIngestionError as exc:
+
+                st.error(
+                    f"Could not read {uploaded_file.name}: {exc}"
+                )
+
+            except Exception as exc:
+
+                st.error(
+                    f"Could not preview {uploaded_file.name}: {exc}"
+                )
 
 # ──────────────────────────────────────────────────────────────────────────────
 with about_tab:

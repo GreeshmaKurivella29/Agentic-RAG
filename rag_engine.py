@@ -10,9 +10,15 @@ from typing import Any
 
 import numpy as np
 from rank_bm25 import BM25Okapi
-
+from vector_store import get_vector_store
 LEGAL_TERMS = {"act", "article", "section", "constitution", "code", "ipc", "bns", "crpc", "bnss", "judgment", "case", "court", "writ", "bail", "appeal", "petition", "precedent", "ruling", "amendment", "rules"}
-PRIMARY_SOURCES = {"India Code", "Supreme Court of India"}
+PRIMARY_SOURCES = {
+    "India Code",
+    "Supreme Court of India",
+    "Indian Kanoon",
+    "High Court",
+    "Gazette of India",
+}
 
 
 @dataclass
@@ -33,7 +39,11 @@ def _tokens(text: str) -> list[str]:
 def load_corpus() -> list[dict[str, Any]]:
     """Read the bundled sample and locally ingested source records."""
     rows: list[dict[str, Any]] = []
-    for path in (Path("data/demo_legal_corpus.jsonl"), Path("data/legal_corpus.jsonl")):
+    for path in (
+        Path("data/demo_legal_corpus.jsonl"),
+        Path("data/legal_corpus.jsonl"),
+        Path("data/pdf_legal_corpus.jsonl"),
+):
         if path.exists():
             for line in path.read_text(encoding="utf-8").splitlines():
                 if line.strip():
@@ -55,23 +65,21 @@ class LegalRetriever:
         self.corpus = corpus
         self.tokenized = [_tokens(f"{d['title']} {d['text']}") for d in corpus]
         self.bm25 = BM25Okapi(self.tokenized) if corpus else None
-        self.embedder = None
-        self.embeddings = None
         self.reranker = None
-
-    def _embeddings(self) -> np.ndarray:
-        if self.embeddings is None:
-            from sentence_transformers import SentenceTransformer
-            self.embedder = SentenceTransformer("all-MiniLM-L6-v2")
-            self.embeddings = self.embedder.encode([f"{d['title']}\n{d['text']}" for d in self.corpus], normalize_embeddings=True, show_progress_bar=False)
-        return self.embeddings
 
     def _evidence(self, index: int, score: float, query: str) -> Evidence:
         doc = self.corpus[index]
-        query_terms = set(_tokens(query)) - {"what", "does", "the", "and", "for", "with", "under", "about", "latest"}
+        query_terms = set(_tokens(query)) - {
+            "what", "does", "the", "and", "for",
+            "with", "under", "about", "latest"
+        }
         document_terms = set(_tokens(f"{doc['title']} {doc['text']}"))
         relevance = len(query_terms & document_terms) / max(1, len(query_terms))
-        return Evidence(**{key: doc[key] for key in ("id", "title", "url", "source", "text")}, score=score, relevance=relevance)
+        return Evidence(
+            **{key: doc[key] for key in ("id", "title", "url", "source", "text")},
+            score=score,
+            relevance=relevance
+        )
 
     def bm25_search(self, query: str, limit: int) -> list[Evidence]:
         if not self.bm25:
@@ -81,34 +89,88 @@ class LegalRetriever:
         return [self._evidence(int(i), float(scores[i]), query) for i in top if scores[i] > 0]
 
     def vector_search(self, query: str, limit: int) -> list[Evidence]:
-        if not self.corpus:
-            return []
+        """Search the persistent FAISS vector index."""
+
         try:
-            vectors = self._embeddings()
-            query_vector = self.embedder.encode([query], normalize_embeddings=True, show_progress_bar=False)[0]
-            scores = vectors @ query_vector
-            top = np.argsort(scores)[::-1][:limit]
-            return [self._evidence(int(i), float(scores[i]), query) for i in top if scores[i] > 0.10]
+            store = get_vector_store()
+            results = store.search(query, limit)
+
+            evidence: list[Evidence] = []
+
+            for record, score in results:
+                query_terms = set(_tokens(query)) - {
+                    "what",
+                    "does",
+                    "the",
+                    "and",
+                    "for",
+                    "with",
+                    "under",
+                    "about",
+                    "latest",
+                }
+
+                document_terms = set(
+                    _tokens(f"{record['title']} {record['text']}")
+                )
+
+                relevance = len(
+                    query_terms & document_terms
+                ) / max(1, len(query_terms))
+
+                evidence.append(
+                    Evidence(
+                        id=record["id"],
+                        title=record["title"],
+                        url=record["url"],
+                        source=record["source"],
+                        text=record["text"],
+                        score=float(score),
+                        relevance=relevance,
+                    )
+                )
+
+            return [
+                item
+                for item in evidence
+                if item.score > 0.10
+            ]
+
         except Exception:
             return []
 
     def retrieve(self, query: str, route: str, limit: int = 12) -> list[Evidence]:
         if route == "BM25":
             candidates = self.bm25_search(query, limit)
+
         elif route == "Vector DB":
             candidates = self.vector_search(query, limit)
+
         else:
+            # Hybrid = BM25 + FAISS vector search + RRF
             combined: dict[str, Evidence] = {}
-            for rank, item in enumerate(self.bm25_search(query, limit), 1):
+
+            for rank, item in enumerate(
+                self.bm25_search(query, limit), 1
+            ):
                 item.score = 1 / (60 + rank)
                 combined[item.id] = item
-            for rank, item in enumerate(self.vector_search(query, limit), 1):
+
+            for rank, item in enumerate(
+                self.vector_search(query, limit), 1
+            ):
                 if item.id in combined:
                     combined[item.id].score += 1 / (60 + rank)
                 else:
                     item.score = 1 / (60 + rank)
                     combined[item.id] = item
-            candidates = sorted(combined.values(), key=lambda x: x.score, reverse=True)
+
+            candidates = sorted(
+                combined.values(),
+                key=lambda x: x.score,
+                reverse=True,
+            )
+
         return self.rerank(query, candidates[:limit])
 
     def rerank(self, query: str, candidates: list[Evidence]) -> list[Evidence]:
@@ -138,12 +200,52 @@ def quality_check(question: str) -> tuple[bool, str]:
 
 def choose_route(query: str) -> tuple[str, str]:
     terms = set(_tokens(query))
-    if terms & {"section", "article", "act", "code", "statute", "bare", "amendment", "notification"}:
-        return "BM25", "Exact statutory terms, section references, and amendments favour lexical retrieval."
-    if terms & {"judgment", "case", "precedent", "held", "ruling", "appeal"}:
-        return "Hybrid", "Case-law research benefits from citation keywords and semantic similarity."
-    return "Vector DB", "A conceptual fact pattern favours semantic retrieval."
 
+    # Case-law research benefits from both exact legal terminology
+    # and semantic similarity.
+    if terms & {
+        "judgment",
+        "case",
+        "precedent",
+        "held",
+        "holding",
+        "ruling",
+        "appeal",
+        "petition",
+    }:
+        return (
+            "Hybrid",
+            "Case-law research benefits from lexical matching and semantic similarity.",
+        )
+
+    # Legal/statutory questions should use both BM25 and vector
+    # retrieval so exact Article/Section references are preserved
+    # while semantically related evidence can also be discovered.
+    if terms & {
+        "section",
+        "article",
+        "act",
+        "code",
+        "statute",
+        "bare",
+        "amendment",
+        "notification",
+        "constitution",
+        "law",
+        "right",
+        "offence",
+        "offense",
+        "punishment",
+    }:
+        return (
+            "Hybrid",
+            "Legal research benefits from exact statutory matching plus semantic retrieval.",
+        )
+
+    return (
+        "Vector DB",
+        "A conceptual fact pattern favours semantic retrieval.",
+    )
 
 def groq_chat(messages: list[dict[str, str]], temperature: float = 0.1) -> str:
     from groq import Groq
