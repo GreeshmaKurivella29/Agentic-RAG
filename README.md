@@ -74,7 +74,8 @@ Add it from the Source library, then re-run your question. The ingestor intentio
 
 - **Quality gate:** flags vague or underspecified questions and uses Groq to form a concise legal-research query.
 - **Router:** legislation-oriented questions use BM25; fact/semantic questions use vector search; citations/case-law questions use hybrid retrieval.
-- **Reranker:** `cross-encoder/ms-marco-MiniLM-L-6-v2` scores the top candidate chunks.
+- **Live web retrieval:** real-time judgment and statutory discovery via Indian Kanoon (`live_web_searcher.py`), seamlessly integrated and re-ranked alongside local corpus chunks.
+- **Reranker:** `cross-encoder/ms-marco-MiniLM-L-6-v2` scores candidate passages from both local corpus and live websites on the same neural footing.
 - **Evidence gate:** requires multiple relevant chunks and a minimum reranker score before generation; the retry path expands the query and search depth.
 - **Grounded answer:** the model is instructed to use only supplied context and cite each material proposition as `[S1]`, `[S2]`, etc.
 
@@ -82,7 +83,9 @@ Add it from the Source library, then re-run your question. The ingestor intentio
 
 - `app.py` — Streamlit research interface and routing visualisation
 - `rag_engine.py` — agentic orchestration, retrieval, reranking, evidence gate, Groq answer generation
+- `live_web_searcher.py` — live web search engine querying Indian Kanoon for real-time judgments and statutory provisions
 - `ingest.py` — guarded single-page ingestion tool
+- `pdf_ingestor.py` — PDF parser and chunker for judicial orders and bare acts
 - `trusted_sources.py` — source allowlist and document extraction/chunking
 - `data/demo_legal_corpus.jsonl` — small illustrative seed corpus; replace/augment with vetted primary material
  

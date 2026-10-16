@@ -75,4 +75,10 @@ def ingest_trusted_url(url: str, title_override: str | None = None) -> tuple[int
     with destination.open("a", encoding="utf-8") as handle:
         for item in fresh:
             handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+    if fresh:
+        try:
+            from vector_store import get_vector_store
+            get_vector_store().add_records(fresh, persist=True)
+        except Exception:
+            pass
     return len(fresh), title_override or title

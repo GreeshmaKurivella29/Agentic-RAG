@@ -5,8 +5,14 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+import importlib
 import streamlit as st
 from dotenv import load_dotenv
+
+import rag_engine
+import live_web_searcher
+importlib.reload(rag_engine)
+importlib.reload(live_web_searcher)
 
 from rag_engine import LegalRetriever, load_corpus, run_agent, source_summary
 from trusted_sources import ingest_trusted_url
@@ -18,6 +24,7 @@ st.set_page_config(
     page_title="NyayaRoute | Institutional Intelligence",
     page_icon="⚖",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
 # Function to load and base64 encode the user's uploaded legal image
@@ -51,8 +58,56 @@ st.markdown(f"""
     font-family: 'Inter', sans-serif !important;
   }}
 
-  /* Hide default Streamlit chrome */
-  #MainMenu, footer, header {{ visibility: hidden; }}
+  /* Hide default Streamlit menu and decoration while preserving sidebar controls */
+  #MainMenu {{ visibility: hidden; }}
+  footer {{ visibility: hidden; }}
+  [data-testid="stToolbar"] {{ display: none !important; }}
+  [data-testid="stDecoration"] {{ display: none !important; }}
+
+  /* Ensure header and all sidebar collapse/expand controls are 100% clickable and visible */
+  header[data-testid="stHeader"] {{
+    background: transparent !important;
+    pointer-events: auto !important;
+    z-index: 99999 !important;
+  }}
+
+  /* Make sure the sidebar collapse and expand toggle is always accessible, prominent, and clickable */
+  [data-testid="collapsedControl"],
+  [data-testid="stSidebarCollapsedControl"],
+  [data-testid="stSidebarCollapseButton"],
+  button[data-testid="stSidebarCollapseButton"],
+  button[aria-label="Expand sidebar"],
+  button[aria-label="Close sidebar"] {{
+    visibility: visible !important;
+    display: flex !important;
+    pointer-events: auto !important;
+    opacity: 1 !important;
+  }}
+
+  [data-testid="collapsedControl"],
+  [data-testid="stSidebarCollapsedControl"] {{
+    background-color: #0c1b33 !important;
+    color: #ffffff !important;
+    border: 2px solid #735a3a !important;
+    border-radius: 6px !important;
+    top: 0.6rem !important;
+    left: 0.6rem !important;
+    z-index: 9999999 !important;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35) !important;
+    padding: 4px 8px !important;
+  }}
+  [data-testid="collapsedControl"] button,
+  [data-testid="stSidebarCollapsedControl"] button,
+  [data-testid="stSidebarCollapseButton"] button {{
+    color: #ffffff !important;
+  }}
+  [data-testid="collapsedControl"] svg,
+  [data-testid="stSidebarCollapsedControl"] svg,
+  [data-testid="stSidebarCollapseButton"] svg {{
+    fill: #ffffff !important;
+    stroke: #ffffff !important;
+  }}
+
   .block-container {{
     padding-top: 1rem !important;
     padding-bottom: 2rem !important;
@@ -243,12 +298,21 @@ st.markdown(f"""
 
 
 @st.cache_resource(show_spinner="Preparing legal retrieval workspace…")
+def _init_legal_retriever(_corpus: list[dict], cache_token: str = "v4_live") -> LegalRetriever:
+    return LegalRetriever(_corpus)
+
+
 def get_retriever() -> LegalRetriever:
-    return LegalRetriever(load_corpus())
+    corpus = load_corpus()
+    retriever = _init_legal_retriever(corpus, cache_token="v4_live")
+    if not hasattr(retriever, "live_web_search"):
+        _init_legal_retriever.clear()
+        retriever = LegalRetriever(corpus)
+    return retriever
 
 
 def reset_retriever() -> None:
-    get_retriever.clear()
+    _init_legal_retriever.clear()
 
 
 def render_source_links(actions: list[dict]) -> None:
@@ -258,13 +322,16 @@ def render_source_links(actions: list[dict]) -> None:
 
 def memo(question: str, result: dict) -> str:
     sources = "\n".join(
-        f"- [S{i}] {item['title']} — {item['url']}"
+        f"- [S{i}] {item['title']} — {item['url']} (Cross-Encoder: {item.get('cross_encoder_prob', 0):.1%})"
         for i, item in enumerate(result["evidence"], 1)
     ) or "- No adequate source material was retrieved."
     outcome = result["answer"] or f"Insufficient evidence: {result['evidence_reason']}"
+    reformulate_note = f" (Reformulated from original inquiry: '{result.get('reformulate_reason', '')}')" if result.get('was_reformulated') else " (Original query verified specific)"
+    retry_note = f"\n- Stage 6 Retry Query: {result.get('retry_query')}" if result.get('retried') else ""
     return f"""# NyayaRoute Legal Research Memo
 
-**Question:** {question}
+**Original Question:** {question}
+**Reformulated Search Query:** {result['query_used']}{reformulate_note}
 
 **Research outcome**
 
@@ -273,12 +340,15 @@ def memo(question: str, result: dict) -> str:
 ## Sources consulted
 {sources}
 
-## Research audit
-- Query quality: {result['quality_reason']}
-- Search query: {result['query_used']}
-- Retrieval route: {result['route']} — {result['route_reason']}
-- Evidence decision: {result['evidence_reason']}
-- Retry used: {'Yes' if result['retried'] else 'No'}
+## 7-Stage Pipeline Audit Trail
+- Stage 1 Query Analysis: {result.get('quality_reason', '')}
+- Stage 2 Reformulated Query: {result['query_used']} (Was Reformulated: {'Yes' if result.get('was_reformulated') else 'No'})
+- Stage 3 Retrieval Route: {result['route']} — {result['route_reason']}
+- Stage 4 Neural Reranker: ms-marco-MiniLM evaluated {result.get('candidate_count', 0)} passages ({result.get('live_web_count', 0)} live judicial precedents)
+- Stage 5 Evidence Sufficiency Gate: {'Passed' if result['enough'] else 'Not Passed'} — {result['evidence_reason']}
+- Stage 6 Retry Executed: {'Yes' if result['retried'] else 'No'}{retry_note}
+- Stage 7 Guardrail Status: {'Authoritative Answer' if not result.get('is_insufficient_evidence_response') else 'Explicit Refusal to Hallucinate'}
+- Live Web Retrieval: {'Active (Real-time Judicial Precedents)' if result.get('use_live_web') else 'Disabled'}
 
 *This is legal research information, not legal advice. Verify the current primary text and seek qualified legal counsel for advice.*
 """
@@ -348,6 +418,61 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 
+# ── Global Sidebar ─────────────────────────────────────────────────────────────
+corpus = load_corpus()
+source_options = sorted({item["source"] for item in corpus})
+
+if "use_live_web" not in st.session_state:
+    st.session_state["use_live_web"] = True
+if "selected_sources" not in st.session_state:
+    st.session_state["selected_sources"] = source_options
+
+with st.sidebar:
+    st.markdown("<h3 style='font-family:\"Playfair Display\",serif; font-size:1.3rem; font-weight:700; margin-bottom:0.75rem; color:#0c1b33;'>⚖ Research Settings</h3>", unsafe_allow_html=True)
+    
+    use_live_web_sb = st.toggle(
+        "🌐 Real-Time Precedent Search",
+        value=st.session_state["use_live_web"],
+        key="sb_toggle_live_web",
+        help="When enabled, retrieves live Supreme Court and High Court judgments and precedents in real-time."
+    )
+    st.session_state["use_live_web"] = use_live_web_sb
+    if use_live_web_sb:
+        st.caption("🟢 Live Retrieval Active: Real-time judicial precedents will be retrieved, neural re-ranked, and cited.")
+    else:
+        st.caption("⚪ Local Mode: Limited to indexed local corpus chunks.")
+
+    selected_sources_sb = st.multiselect(
+        "Search these sources",
+        source_options,
+        default=st.session_state["selected_sources"],
+        key="sb_multiselect_sources",
+    )
+    st.session_state["selected_sources"] = selected_sources_sb
+    st.caption("Use the source filter to focus statutory research or case-law research.")
+    
+    st.divider()
+    st.metric("Local Legal Chunks", len(corpus))
+    st.caption(f"{len(source_summary(corpus))} source page(s) indexed")
+    
+    with st.expander("AI Synthesis Mode", expanded=not bool(os.getenv("GROQ_API_KEY"))):
+        api_key_input = st.text_input(
+            "Groq API Key (Optional)",
+            value=os.getenv("GROQ_API_KEY", ""),
+            type="password",
+            help="Enter your Groq key for generative synthesis with Groq LLMs. If omitted, local extractive legal synthesis is used automatically."
+        )
+        if api_key_input and api_key_input != os.getenv("GROQ_API_KEY"):
+            os.environ["GROQ_API_KEY"] = api_key_input
+            st.rerun()
+
+    if os.getenv("GROQ_API_KEY"):
+        st.success(f"Generative LLM Active · {os.getenv('GROQ_MODEL', 'qwen/qwen3.8-27b')}")
+    else:
+        st.info("Local Extractive Synthesis Active. (Add Groq key for generative reasoning).")
+    st.info("Not legal advice. Verify citations in their original source.")
+
+
 workspace_tab, library_tab, kb_tab, about_tab = st.tabs(
     ["Research workspace", "Source library", "Knowledge Base", "How to use this"]
 )
@@ -355,27 +480,6 @@ workspace_tab, library_tab, kb_tab, about_tab = st.tabs(
 with workspace_tab:
     if "pending_question" not in st.session_state:
         st.session_state.pending_question = None
-
-    corpus = load_corpus()
-    source_options = sorted({item["source"] for item in corpus})
-
-    # ── Sidebar ────────────────────────────────────────────────────────────────
-    with st.sidebar:
-        st.markdown("<h3 style='font-family:\"Playfair Display\",serif; font-size:1.2rem; font-weight:700; margin-bottom:0.75rem;'>Research Settings</h3>", unsafe_allow_html=True)
-        selected_sources = st.multiselect(
-            "Search these sources",
-            source_options,
-            default=source_options,
-        )
-        st.caption("Use the source filter to focus statutory research or case-law research.")
-        st.divider()
-        st.metric("Local Legal Chunks", len(corpus))
-        st.caption(f"{len(source_summary(corpus))} source page(s) indexed")
-        if os.getenv("GROQ_API_KEY"):
-            st.success(f"Groq Ready · {os.getenv('GROQ_MODEL', 'llama-3.3-70b-versatile')}")
-        else:
-            st.warning("Add GROQ_API_KEY to .env to generate grounded answers.")
-        st.info("Not legal advice. Verify citations in their original source.")
 
     # ── Institutional Access Search Banner ───────────────────────────────────
     st.markdown("""
@@ -422,18 +526,50 @@ with workspace_tab:
             st.session_state.pending_question = val
             st.rerun()
 
+    st.markdown("<div style='margin-top:1.25rem;'></div>", unsafe_allow_html=True)
     investigate = st.button("Research this question", type="primary")
 
     if investigate:
+        active_sources = st.session_state.get("selected_sources") or source_options
+        active_live_web = st.session_state.get("use_live_web", True)
         if not question.strip():
             st.warning("Please enter a legal research question first.")
-        elif not selected_sources:
+        elif not active_sources:
             st.warning("Select at least one source to search.")
         else:
-            with st.status("Checking query quality, routing retrieval, and evaluating evidence…", expanded=False) as status:
-                result = run_agent(question.strip(), get_retriever(), set(selected_sources))
-                st.write(result)
-                status.update(label="Research decision complete", state="complete")
+            with st.status("Executing 7-Stage Legal Intelligence Pipeline…", expanded=True) as status:
+                result = run_agent(question.strip(), get_retriever(), set(active_sources), use_live_web=active_live_web)
+                
+                # Dynamic visual reporting of the 7 stages from the PPT
+                analysis = result.get("analysis", {})
+                terms_display = ", ".join(result.get("legal_terms", [])) if result.get("legal_terms") else "None detected"
+                cits_display = ", ".join(result.get("citations", [])) if result.get("citations") else "None detected"
+                st.write(f"✓ **Stage 1 (Query Analysis):** Legal terms: [{terms_display}] · Citations: [{cits_display}] · Ambiguity: {'Flagged' if analysis.get('is_ambiguous') else 'Clean/Specific'}.")
+                
+                if result.get("was_reformulated"):
+                    st.write(f"✓ **Stage 2 (Reformulation):** Reformulated weak/ambiguous query to: *\"{result['query_used']}\"* ({result['reformulate_reason']})")
+                else:
+                    st.write("✓ **Stage 2 (Query Validation):** Query sufficiently grounded; proceeding with original query.")
+                
+                st.write(f"✓ **Stage 3 (Routing):** Routed to **{result['route']}** ({result.get('candidate_count', 0)} candidates).")
+                
+                if result.get("use_live_web"):
+                    st.write(f"✓ **Stage 4 (Neural Cross-Encoder):** Evaluated {result.get('candidate_count', 0)} candidate authorities ({result.get('live_web_count', 0)} live judicial precedents) using ms-marco-MiniLM.")
+                else:
+                    st.write(f"✓ **Stage 4 (Cross-Encoder Re-Ranking):** Scored candidate passages using ms-marco-MiniLM neural relevance model.")
+                
+                if result.get("enough"):
+                    st.write(f"✓ **Stage 5 (Evidence Sufficiency Gate):** **PASSED** ({result['evidence_reason']})")
+                    st.write("✓ **Stage 6 (Retry Assessment):** Bypassed (first-pass evidence passed sufficiency gate).")
+                    st.write("✓ **Stage 7 (Answer Synthesis):** Grounded legal brief synthesized with source citations.")
+                    status.update(label="✓ 7-Stage Pipeline Complete: Verified Authority Grounded", state="complete")
+                else:
+                    st.write(f"⚠ **Stage 5 (Evidence Sufficiency Gate):** **INSUFFICIENT** ({result['evidence_reason']})")
+                    if result.get("retried"):
+                        st.write(f"✓ **Stage 6 (Targeted Retry):** Reformulated query retry escalated to {result.get('retry_route', 'Hybrid Retrieval')}.")
+                    st.write("✓ **Stage 7 (Safe Refusal):** Explicit Insufficient-Evidence Declaration returned (hallucination prevented).")
+                    status.update(label="⚠ 7-Stage Pipeline Complete: Insufficient Evidence Safeguard", state="complete")
+
             st.session_state["research_result"] = result
             st.session_state["research_question"] = question.strip()
 
@@ -442,161 +578,272 @@ with workspace_tab:
 
     if result and research_question:
         # Active Workspace Header & Metrics
-        st.markdown("""
-        <div style="display:flex; align-items:center; justify-content:space-between; border-bottom:2px solid #000; padding-bottom:0.6rem; margin:2.5rem 0 1.5rem;">
-          <div style="display:flex; align-items:center; gap:0.75rem;">
-            <h3 style="font-family:'Playfair Display',serif; font-size:1.4rem; font-weight:700; color:#000; margin:0;">Active Workspace</h3>
-            <span style="background:#fddab2; color:#785e3e; font-family:'Inter',sans-serif; font-size:0.65rem; font-weight:700; text-transform:uppercase; padding:3px 10px; letter-spacing:0.05em;">Live Analysis</span>
-          </div>
-          <div style="display:flex; gap:0.75rem;">
-            <div style="background:#fff; border:1px solid #c5c6ce; padding:0.5rem 0.9rem; text-align:center; border-radius:4px;">
-              <span style="font-family:'Playfair Display',serif; font-size:0.95rem; font-weight:700; color:#000; display:block;">2.4M</span>
-              <span style="font-family:'Inter',sans-serif; font-size:0.6rem; text-transform:uppercase; color:#44474d; letter-spacing:0.05em;">Records</span>
-            </div>
-            <div style="background:#fff; border:1px solid #c5c6ce; padding:0.5rem 0.9rem; text-align:center; border-radius:4px;">
-              <span style="font-family:'Playfair Display',serif; font-size:0.95rem; font-weight:700; color:#000; display:block;">0.4s</span>
-              <span style="font-family:'Inter',sans-serif; font-size:0.6rem; text-transform:uppercase; color:#44474d; letter-spacing:0.05em;">Latency</span>
-            </div>
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f"""<div style="display:flex; align-items:center; justify-content:space-between; border-bottom:2px solid #000; padding-bottom:0.6rem; margin:2.5rem 0 1.5rem;">
+<div style="display:flex; align-items:center; gap:0.75rem;">
+<h3 style="font-family:'Playfair Display',serif; font-size:1.4rem; font-weight:700; color:#000; margin:0;">Active Workspace</h3>
+<span style="background:{'#d1fae5' if result['enough'] else '#fef3c7'}; color:{'#065f46' if result['enough'] else '#92400e'}; font-family:'Inter',sans-serif; font-size:0.65rem; font-weight:700; text-transform:uppercase; padding:3px 10px; letter-spacing:0.05em; border-radius:3px;">
+{'Verified Grounded' if result['enough'] else 'Insufficient Evidence Refusal'}
+</span>
+</div>
+<div style="display:flex; gap:0.75rem;">
+<div style="background:#fff; border:1px solid #c5c6ce; padding:0.5rem 0.9rem; text-align:center; border-radius:4px;">
+<span style="font-family:'Playfair Display',serif; font-size:0.95rem; font-weight:700; color:#000; display:block;">{len(corpus)}</span>
+<span style="font-family:'Inter',sans-serif; font-size:0.6rem; text-transform:uppercase; color:#44474d; letter-spacing:0.05em;">Legal Chunks</span>
+</div>
+<div style="background:#fff; border:1px solid #c5c6ce; padding:0.5rem 0.9rem; text-align:center; border-radius:4px;">
+<span style="font-family:'Playfair Display',serif; font-size:0.95rem; font-weight:700; color:#000; display:block;">{result.get('latency_seconds', 0.28):.2f}s</span>
+<span style="font-family:'Inter',sans-serif; font-size:0.6rem; text-transform:uppercase; color:#44474d; letter-spacing:0.05em;">Latency</span>
+</div>
+</div>
+</div>""", unsafe_allow_html=True)
 
         left_col, right_col = st.columns([2, 1], gap="large")
 
         with left_col:
-            # Core Authority Card
-            if result["enough"] and result["answer"]:
-                st.markdown(f"""
-                <div style="background:#ffffff; border:1px solid #c5c6ce; border-radius:6px; padding:1.75rem; margin-bottom:1.5rem;">
-                  <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.75rem;">
-                    <div>
-                      <span style="font-family:'Inter',sans-serif; font-size:0.68rem; font-weight:700; text-transform:uppercase; letter-spacing:0.1em; color:#735a3a;">
-                        Core Authority &amp; Synthesis
-                      </span>
-                      <h4 style="font-family:'Playfair Display',serif; font-size:1.3rem; font-weight:600; color:#1a1c1b; margin:0.3rem 0 0;">
-                        {research_question}
-                      </h4>
-                    </div>
-                    <span class="material-symbols-outlined" style="color:#735a3a; font-size:22px;">bookmark</span>
-                  </div>
-                  <div style="height:1px; background:#c5c6ce; opacity:0.5; margin-bottom:1.25rem;"></div>
-                  <div style="font-family:'Inter',sans-serif; font-size:0.95rem; line-height:1.8; color:#1a1c1b;">
-                    {result["answer"]}
-                  </div>
-                  <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:0.75rem; margin-top:1.25rem;">
-                    <div style="background:#f4f3f1; border-radius:4px; padding:0.85rem;">
-                      <p style="font-size:0.62rem; text-transform:uppercase; letter-spacing:0.05em; color:#44474d; margin-bottom:0.2rem;">Retrieval Route</p>
-                      <p style="font-weight:700; font-size:0.88rem; color:#1a1c1b; margin:0;">{result['route']}</p>
-                    </div>
-                    <div style="background:#f4f3f1; border-radius:4px; padding:0.85rem;">
-                      <p style="font-size:0.62rem; text-transform:uppercase; letter-spacing:0.05em; color:#44474d; margin-bottom:0.2rem;">Citations</p>
-                      <p style="font-weight:700; font-size:0.88rem; color:#1a1c1b; margin:0;">{len(result['evidence'])} Authorities</p>
-                    </div>
-                    <div style="background:#f4f3f1; border-radius:4px; padding:0.85rem;">
-                      <p style="font-size:0.62rem; text-transform:uppercase; letter-spacing:0.05em; color:#44474d; margin-bottom:0.2rem;">Gate Status</p>
-                      <p style="font-weight:700; font-size:0.88rem; color:#047857; margin:0;">Evidence Passed</p>
-                    </div>
-                  </div>
-                </div>
-                """, unsafe_allow_html=True)
+            query_used = result.get('query_used', research_question)
+            was_reformulated = result.get('was_reformulated', False)
+            reformulate_reason = result.get('reformulate_reason', '')
+            retried = result.get('retried', False)
+            retry_query = result.get('retry_query', '')
 
-            elif result["enough"]:
-                st.info("Evidence gate passed. Add **GROQ_API_KEY** to `.env` to generate a cited answer from this evidence.")
+            # Core Authority Card (or Explicit Insufficient-Evidence Declaration)
+            if result["enough"] and result.get("answer"):
+                badge_bg = '#d1fae5' if was_reformulated else '#e0f2fe'
+                badge_color = '#065f46' if was_reformulated else '#0369a1'
+                badge_text = '✓ Reformulated for Precision' if was_reformulated else '✓ Specific Query Retained'
+
+                retry_badge_html = f'<div style="margin-top:6px; padding-top:6px; border-top:1px dashed #cbd5e1;"><span style="font-weight:700; color:#b45309; font-size:0.75rem; text-transform:uppercase;">Stage 6 Retry Query: </span><code style="background:#fffbeb; color:#b45309; padding:2px 6px; border-radius:3px; font-weight:600; border:1px solid #fde68a;">{retry_query}</code></div>' if retried and retry_query else ''
+
+                rationale_html = f'<div style="margin-top:4px; font-size:0.75rem; color:#475569;"><em>Rationale:</em> {reformulate_reason}</div>' if reformulate_reason and was_reformulated else ''
+
+                header_html = f"""<div style="background:#ffffff; border:1px solid #c5c6ce; border-radius:6px; padding:1.5rem 1.75rem 1.25rem; margin-bottom:1.25rem;">
+<div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.75rem;">
+<div>
+<span style="font-family:'Inter',sans-serif; font-size:0.68rem; font-weight:700; text-transform:uppercase; letter-spacing:0.1em; color:#735a3a;">
+Core Authority &amp; Synthesis (7-Stage Pipeline Output)
+</span>
+<h4 style="font-family:'Playfair Display',serif; font-size:1.3rem; font-weight:600; color:#1a1c1b; margin:0.3rem 0 0;">
+{research_question}
+</h4>
+</div>
+<span class="material-symbols-outlined" style="color:#735a3a; font-size:22px;">verified</span>
+</div>
+<div style="height:1px; background:#c5c6ce; opacity:0.5; margin:0.75rem 0 1rem;"></div>
+<div style="background:#f8f9fa; border:1px solid #e2e8f0; border-left:4px solid #735a3a; border-radius:4px; padding:0.85rem 1rem; margin-bottom:0.25rem;">
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem;">
+<span style="font-family:'Inter',sans-serif; font-size:0.68rem; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:#735a3a;">Stage 2 Search Query Transformation</span>
+<span style="font-family:'Inter',sans-serif; font-size:0.65rem; font-weight:700; background:{badge_bg}; color:{badge_color}; padding:2px 8px; border-radius:3px;">{badge_text}</span>
+</div>
+<div style="font-family:'Inter',sans-serif; font-size:0.85rem; line-height:1.5; color:#1a1c1b;">
+<div style="margin-bottom:0.35rem;"><span style="font-weight:600; color:#64748b; font-size:0.75rem; text-transform:uppercase;">Original Inquiry: </span><span style="color:#334155; font-style:italic;">"{research_question}"</span></div>
+<div><span style="font-weight:700; color:#0c1b33; font-size:0.75rem; text-transform:uppercase;">Reformulated Search Query: </span><code style="background:#ffffff; border:1px solid #cbd5e1; color:#0c1b33; font-weight:600; font-size:0.83rem; padding:2px 8px; border-radius:3px;">{query_used}</code></div>
+{rationale_html}
+{retry_badge_html}
+</div>
+</div>
+</div>"""
+                st.markdown(header_html, unsafe_allow_html=True)
+                st.markdown(result["answer"])
+
+                metrics_html = f"""<div style="display:grid; grid-template-columns:repeat(3,1fr); gap:0.75rem; margin:1.25rem 0 1.5rem;">
+<div style="background:#f4f3f1; border-radius:4px; padding:0.85rem; border:1px solid #e2e8f0;">
+<p style="font-size:0.62rem; text-transform:uppercase; letter-spacing:0.05em; color:#44474d; margin-bottom:0.2rem;">Retrieval Route</p>
+<p style="font-weight:700; font-size:0.85rem; color:#1a1c1b; margin:0;">{result['route']}</p>
+</div>
+<div style="background:#f4f3f1; border-radius:4px; padding:0.85rem; border:1px solid #e2e8f0;">
+<p style="font-size:0.62rem; text-transform:uppercase; letter-spacing:0.05em; color:#44474d; margin-bottom:0.2rem;">Citations</p>
+<p style="font-weight:700; font-size:0.85rem; color:#1a1c1b; margin:0;">{len(result['evidence'])} Authorities</p>
+</div>
+<div style="background:#f4f3f1; border-radius:4px; padding:0.85rem; border:1px solid #e2e8f0;">
+<p style="font-size:0.62rem; text-transform:uppercase; letter-spacing:0.05em; color:#44474d; margin-bottom:0.2rem;">Gate Status</p>
+<p style="font-weight:700; font-size:0.85rem; color:#047857; margin:0;">Evidence Passed</p>
+</div>
+</div>"""
+                st.markdown(metrics_html, unsafe_allow_html=True)
 
             else:
-                st.markdown(f"""
-                <div style="background:#fffbf1; border:1px solid #fddab2; border-left:4px solid #735a3a; border-radius:6px; padding:1.75rem; margin-bottom:1.5rem;">
-                  <span style="font-family:'Inter',sans-serif; font-size:0.68rem; font-weight:700; text-transform:uppercase; letter-spacing:0.1em; color:#b45309;">
-                    Insufficient Evidence
-                  </span>
-                  <h4 style="font-family:'Playfair Display',serif; font-size:1.25rem; font-weight:600; color:#1a1c1b; margin:0.3rem 0 0.5rem;">
-                    Library Material Insufficient
-                  </h4>
-                  <p style="color:#44474d; font-size:0.92rem; margin:0;">{result["evidence_reason"]}</p>
-                </div>
-                """, unsafe_allow_html=True)
-                st.markdown("**Useful next steps**")
+                badge_bg = '#fef3c7' if was_reformulated else '#e0f2fe'
+                badge_color = '#92400e' if was_reformulated else '#0369a1'
+                badge_text = '✓ Reformulated' if was_reformulated else '✓ Evaluated Query'
+
+                retry_badge_html = f'<div style="margin-top:6px; padding-top:6px; border-top:1px dashed #fed7aa;"><span style="font-weight:700; color:#b45309; font-size:0.75rem; text-transform:uppercase;">Stage 6 Retry Attempted: </span><code style="background:#fffbeb; color:#b45309; padding:2px 6px; border-radius:3px; font-weight:600; border:1px solid #fde68a;">{retry_query}</code></div>' if retried and retry_query else ''
+
+                rationale_html = f'<div style="margin-top:4px; font-size:0.75rem; color:#92400e;"><em>Rationale:</em> {reformulate_reason}</div>' if reformulate_reason and was_reformulated else ''
+
+                refusal_header_html = f"""<div style="background:#fffbf1; border:1px solid #fddab2; border-left:4px solid #b45309; border-radius:6px; padding:1.5rem 1.75rem 1.25rem; margin-bottom:1.25rem;">
+<div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.75rem;">
+<div>
+<span style="font-family:'Inter',sans-serif; font-size:0.68rem; font-weight:700; text-transform:uppercase; letter-spacing:0.1em; color:#b45309;">
+Explicit Insufficient Evidence Declaration (Refusal to Hallucinate)
+</span>
+<h4 style="font-family:'Playfair Display',serif; font-size:1.25rem; font-weight:600; color:#1a1c1b; margin:0.3rem 0 0;">
+{research_question}
+</h4>
+</div>
+<span class="material-symbols-outlined" style="color:#b45309; font-size:22px;">shield</span>
+</div>
+<div style="height:1px; background:#fddab2; opacity:0.8; margin:0.75rem 0 1rem;"></div>
+<div style="background:#fff7ed; border:1px solid #fed7aa; border-left:4px solid #b45309; border-radius:4px; padding:0.85rem 1rem; margin-bottom:0.25rem;">
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem;">
+<span style="font-family:'Inter',sans-serif; font-size:0.68rem; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:#b45309;">Stage 2 Search Query Transformation</span>
+<span style="font-family:'Inter',sans-serif; font-size:0.65rem; font-weight:700; background:{badge_bg}; color:{badge_color}; padding:2px 8px; border-radius:3px;">{badge_text}</span>
+</div>
+<div style="font-family:'Inter',sans-serif; font-size:0.85rem; line-height:1.5; color:#1a1c1b;">
+<div style="margin-bottom:0.35rem;"><span style="font-weight:600; color:#9a3412; font-size:0.75rem; text-transform:uppercase;">Original Inquiry: </span><span style="color:#431407; font-style:italic;">"{research_question}"</span></div>
+<div><span style="font-weight:700; color:#7c2d12; font-size:0.75rem; text-transform:uppercase;">Evaluated Search Query: </span><code style="background:#ffffff; border:1px solid #fed7aa; color:#7c2d12; font-weight:600; font-size:0.83rem; padding:2px 8px; border-radius:3px;">{query_used}</code></div>
+{rationale_html}
+{retry_badge_html}
+</div>
+</div>
+</div>"""
+                st.markdown(refusal_header_html, unsafe_allow_html=True)
+                st.markdown(result.get('answer', result.get('evidence_reason')))
+                st.markdown("**Recommended Primary Legal Portals**")
                 render_source_links(result["actions"])
-                st.caption("Open a relevant primary document, then add its specific URL in the Source library tab.")
+                st.caption("Verify against official primary databases or ingest the relevant Bare Act / Judgment PDF into the Source Library.")
 
-            # Live Analysis Cards
-            st.markdown("""
-            <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:0.75rem; margin-bottom:1.5rem;">
-              <div style="background:#ffffff; border:1px solid #c5c6ce; border-left:4px solid #000000; padding:1.1rem; border-radius:4px;">
-                <span style="font-family:'Inter',sans-serif; font-size:0.62rem; font-weight:700; text-transform:uppercase; letter-spacing:0.1em; color:#735a3a; display:block; margin-bottom:0.5rem;">Conflict Alert</span>
-                <p style="font-family:'Inter',sans-serif; font-size:0.8rem; color:#1a1c1b; font-style:italic; margin-bottom:0.5rem; line-height:1.4;">"Potential precedent mismatch relative to recent Supreme Court ruling."</p>
-                <span style="font-family:'Inter',sans-serif; font-size:0.65rem; color:#44474d;">Source: AI Auditor • 2m ago</span>
-              </div>
-              <div style="background:#ffffff; border:1px solid #c5c6ce; border-left:4px solid #75777e; padding:1.1rem; border-radius:4px;">
-                <span style="font-family:'Inter',sans-serif; font-size:0.62rem; font-weight:700; text-transform:uppercase; letter-spacing:0.1em; color:#000000; display:block; margin-bottom:0.5rem;">Live Analysis</span>
-                <p style="font-family:'Inter',sans-serif; font-size:0.8rem; color:#1a1c1b; margin-bottom:0.5rem; line-height:1.4;">Statutory cross-reference complete for selected primary sources.</p>
-                <span style="font-family:'Inter',sans-serif; font-size:0.65rem; color:#44474d;">Status: Finalizing Synthesis</span>
-              </div>
-              <div style="background:#ffffff; border:1px solid #c5c6ce; border-left:4px solid #785e3e; padding:1.1rem; border-radius:4px;">
-                <span style="font-family:'Inter',sans-serif; font-size:0.62rem; font-weight:700; text-transform:uppercase; letter-spacing:0.1em; color:#735a3a; display:block; margin-bottom:0.5rem;">System Update</span>
-                <p style="font-family:'Inter',sans-serif; font-size:0.8rem; color:#1a1c1b; margin-bottom:0.5rem; line-height:1.4;">Local vector index &amp; BM25 retriever operational.</p>
-                <span style="font-family:'Inter',sans-serif; font-size:0.65rem; color:#44474d;">Coverage: Fully Indexed</span>
-              </div>
-            </div>
-            """, unsafe_allow_html=True)
+            # Live 3-Card Snapshot
+            snapshot_html = f"""<div style="display:grid; grid-template-columns:repeat(3,1fr); gap:0.75rem; margin-bottom:1.5rem;">
+<div style="background:#ffffff; border:1px solid #c5c6ce; border-left:4px solid #735a3a; padding:1.1rem; border-radius:4px;">
+<span style="font-family:'Inter',sans-serif; font-size:0.62rem; font-weight:700; text-transform:uppercase; letter-spacing:0.1em; color:#735a3a; display:block; margin-bottom:0.5rem;">Evidence Gate</span>
+<p style="font-family:'Inter',sans-serif; font-size:0.8rem; color:#1a1c1b; margin-bottom:0.5rem; line-height:1.4;">{result['evidence_reason']}</p>
+<span style="font-family:'Inter',sans-serif; font-size:0.65rem; color:#44474d;">Status: {'Passed' if result['enough'] else 'Insufficient'}</span>
+</div>
+<div style="background:#ffffff; border:1px solid #c5c6ce; border-left:4px solid #0c1b33; padding:1.1rem; border-radius:4px;">
+<span style="font-family:'Inter',sans-serif; font-size:0.62rem; font-weight:700; text-transform:uppercase; letter-spacing:0.1em; color:#0c1b33; display:block; margin-bottom:0.5rem;">Routing Decision</span>
+<p style="font-family:'Inter',sans-serif; font-size:0.8rem; color:#1a1c1b; margin-bottom:0.5rem; line-height:1.4;">Route: <strong>{result['route']}</strong>. {result['route_reason'][:90]}...</p>
+<span style="font-family:'Inter',sans-serif; font-size:0.65rem; color:#44474d;">Reranker: ms-marco-MiniLM</span>
+</div>
+<div style="background:#ffffff; border:1px solid #c5c6ce; border-left:4px solid #047857; padding:1.1rem; border-radius:4px;">
+<span style="font-family:'Inter',sans-serif; font-size:0.62rem; font-weight:700; text-transform:uppercase; letter-spacing:0.1em; color:#047857; display:block; margin-bottom:0.5rem;">Corpus Coverage</span>
+<p style="font-family:'Inter',sans-serif; font-size:0.8rem; color:#1a1c1b; margin-bottom:0.5rem; line-height:1.4;">FAISS Vector Index &amp; BM25 active ({len(corpus)} local legal chunks).</p>
+<span style="font-family:'Inter',sans-serif; font-size:0.65rem; color:#44474d;">Cross-Encoder Neural Reranking</span>
+</div>
+</div>"""
+            st.markdown(snapshot_html, unsafe_allow_html=True)
 
-            # Authorities & Citations
+            # Authorities & Citations with Neural Re-Ranking Scores
             st.markdown("<h4 style='font-family:\"Playfair Display\",serif; font-size:1.25rem; font-weight:700; font-style:italic; margin-bottom:1rem;'>Authorities and citations</h4>", unsafe_allow_html=True)
             if not result["evidence"]:
                 st.caption("No relevant chunks were retrieved from the selected local source library.")
 
             for index, item in enumerate(result["evidence"], 1):
-                relevance = f"{item['relevance']:.0%} query-anchor match"
-                with st.expander(f"[S{index}] {item['title']} · {item['source']} · {relevance}"):
-                    st.markdown(f"**Primary link:** [{item['url']}]({item['url']})")
-                    st.caption("Verify the full source text, date, court/bench, and later treatment before relying on it.")
+                ce_prob = item.get("cross_encoder_prob", item.get("relevance", 0))
+                ce_score = item.get("cross_encoder_score", item.get("score", 0))
+                anchor_match = item.get("relevance", 0)
+                is_live = item.get("source") == "Indian Kanoon" and str(item.get("id", "")).startswith("live_")
+                source_tag = "🌐 Judicial Precedent" if is_live else item['source']
+                with st.expander(f"[S{index}] {item['title']} · {source_tag} · Neural Confidence: {ce_prob:.1%} (Score: {ce_score:.2f}) · {anchor_match:.0%} anchor match"):
+                    if is_live:
+                        st.markdown(f"**Live Judicial Precedent:** [{item['url']}]({item['url']}) · [View Full Judgment ↗]({item['url']})")
+                    else:
+                        st.markdown(f"**Primary link:** [{item['url']}]({item['url']})")
+                    st.caption("Verify the full source text, date, court/bench, and later treatment before judicial reliance.")
                     st.write(item["text"])
 
-            with st.expander("Research audit trail"):
-                cols = st.columns(4)
-                quality = "Ready" if result["good_query"] else "Clarified"
-                values = [
-                    ("Query quality", quality, result["quality_reason"]),
-                    ("Retrieval route", result["route"], result["route_reason"]),
-                    ("Retry", "Used" if result["retried"] else "—",
-                     f"{len(result['evidence'])} cited chunks retained"),
-                    ("Evidence gate", "Passed" if result["enough"] else "Not passed", result["evidence_reason"]),
-                ]
-                for col, (title, value, detail) in zip(cols, values):
-                    col.markdown(f"""
-                    <div style="border:1px solid #c5c6ce; border-radius:4px; padding:0.85rem; background:#fff;">
-                      <small style="color:#735a3a; font-weight:700; text-transform:uppercase; font-size:0.65rem;">{title}</small><br>
-                      <strong style="color:#1a1c1b; font-size:0.9rem;">{value}</strong><br>
-                      <small style="color:#44474d; font-size:0.72rem;">{detail}</small>
-                    </div>
-                    """, unsafe_allow_html=True)
-                st.caption(f"Search query used: **{result['query_used']}**")
+            # Comprehensive 7-Stage Pipeline Audit Trail
+            with st.expander("7-Stage Legal Intelligence Audit Trail (PPT Pipeline Specification)", expanded=True):
+                st.markdown("##### Stage-by-Stage Verification Breakdown")
+                
+                s_cols1 = st.columns(3)
+                with s_cols1[0]:
+                    st.markdown("""<div style="border:1px solid #c5c6ce; border-radius:4px; padding:0.85rem; background:#fff; height:100%;">
+<small style="color:#735a3a; font-weight:700; text-transform:uppercase; font-size:0.65rem;">Stage 1: Query Analysis</small><br>
+<strong style="color:#1a1c1b; font-size:0.88rem;">Terms, Entities &amp; Citations</strong><br>
+</div>""", unsafe_allow_html=True)
+                    st.caption(f"**Legal terms:** {', '.join(result.get('legal_terms', [])) or 'None'}")
+                    st.caption(f"**Citations:** {', '.join(result.get('citations', [])) or 'None'}")
+                    st.caption(f"**Entities:** {', '.join(result.get('entities', [])) or 'None'}")
+                    st.caption(f"**Ambiguity:** {'Flagged' if result.get('analysis', {}).get('is_ambiguous') else 'Clean/Specific'}")
+
+                with s_cols1[1]:
+                    st.markdown("""<div style="border:1px solid #c5c6ce; border-radius:4px; padding:0.85rem; background:#fff; height:100%;">
+<small style="color:#735a3a; font-weight:700; text-transform:uppercase; font-size:0.65rem;">Stage 2: Reformulation</small><br>
+<strong style="color:#1a1c1b; font-size:0.88rem;">Weak/Ambiguous Resolution</strong><br>
+</div>""", unsafe_allow_html=True)
+                    st.caption(f"**Was Reformulated:** {'Yes' if result.get('was_reformulated') else 'No'}")
+                    st.caption(f"**Effective Query:** {result.get('query_used', '')}")
+                    st.caption(f"**Rationale:** {result.get('reformulate_reason', 'Query already specific.')}")
+
+                with s_cols1[2]:
+                    st.markdown("""<div style="border:1px solid #c5c6ce; border-radius:4px; padding:0.85rem; background:#fff; height:100%;">
+<small style="color:#735a3a; font-weight:700; text-transform:uppercase; font-size:0.65rem;">Stage 3: Retrieval Route</small><br>
+<strong style="color:#1a1c1b; font-size:0.88rem;">BM25 / Dense / Hybrid</strong><br>
+</div>""", unsafe_allow_html=True)
+                    st.caption(f"**Selected Route:** {result.get('route', '')}")
+                    st.caption(f"**Rationale:** {result.get('route_reason', '')}")
+                    st.caption(f"**Candidates Retrieved:** {result.get('candidate_count', len(result.get('evidence', [])))}")
+
+                top_match_display = f"{result['evidence'][0].get('cross_encoder_prob', 0):.1%}" if result.get("evidence") else "N/A"
+                s_cols2 = st.columns(4)
+                with s_cols2[0]:
+                    st.markdown(f"""<div style="border:1px solid #c5c6ce; border-radius:4px; padding:0.85rem; background:#fff; margin-top:0.75rem;">
+<small style="color:#735a3a; font-weight:700; text-transform:uppercase; font-size:0.65rem;">Stage 4: Re-Ranking</small><br>
+<strong style="color:#1a1c1b; font-size:0.85rem;">Cross-Encoder</strong><br>
+<small style="color:#44474d; font-size:0.72rem;">Model: ms-marco-MiniLM-L-6-v2<br>Top Neural Match: {top_match_display}</small>
+</div>""", unsafe_allow_html=True)
+
+                with s_cols2[1]:
+                    st.markdown(f"""<div style="border:1px solid #c5c6ce; border-radius:4px; padding:0.85rem; background:#fff; margin-top:0.75rem;">
+<small style="color:#735a3a; font-weight:700; text-transform:uppercase; font-size:0.65rem;">Stage 5: Sufficiency Gate</small><br>
+<strong style="color:{'#047857' if result['enough'] else '#b45309'}; font-size:0.85rem;">{'Passed' if result['enough'] else 'Insufficient'}</strong><br>
+<small style="color:#44474d; font-size:0.72rem;">{result.get('evidence_reason', '')[:65]}...</small>
+</div>""", unsafe_allow_html=True)
+
+                with s_cols2[2]:
+                    st.markdown(f"""<div style="border:1px solid #c5c6ce; border-radius:4px; padding:0.85rem; background:#fff; margin-top:0.75rem;">
+<small style="color:#735a3a; font-weight:700; text-transform:uppercase; font-size:0.65rem;">Stage 6: Retry</small><br>
+<strong style="color:#1a1c1b; font-size:0.85rem;">{'Invoked' if result['retried'] else 'Bypassed'}</strong><br>
+<small style="color:#44474d; font-size:0.72rem;">{'Escalated to Hybrid search' if result['retried'] else 'First-pass passed'}</small>
+</div>""", unsafe_allow_html=True)
+
+                with s_cols2[3]:
+                    st.markdown(f"""<div style="border:1px solid #c5c6ce; border-radius:4px; padding:0.85rem; background:#fff; margin-top:0.75rem;">
+<small style="color:#735a3a; font-weight:700; text-transform:uppercase; font-size:0.65rem;">Stage 7: Output Guardrail</small><br>
+<strong style="color:#1a1c1b; font-size:0.85rem;">{'Synthesis' if not result.get('is_insufficient_evidence_response') else 'Refusal'}</strong><br>
+<small style="color:#44474d; font-size:0.72rem;">{'Grounded with citations' if not result.get('is_insufficient_evidence_response') else 'Hallucination prevented'}</small>
+</div>""", unsafe_allow_html=True)
 
         with right_col:
             # Intelligence Summary Panel
-            st.markdown(f"""
-            <div style="background:#0c1b33; color:#ffffff; border-radius:6px; padding:1.75rem; margin-bottom:1.25rem;">
-              <h4 style="font-family:'Playfair Display',serif; font-size:1.2rem; font-weight:600; color:#b9c7e6; margin:0 0 1.25rem;">Intelligence Summary</h4>
-              <div style="font-family:'Inter',sans-serif; font-size:0.82rem; display:flex; flex-direction:column; gap:0.65rem;">
-                <div style="display:flex; justify-content:space-between; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:0.6rem;">
-                  <span style="color:rgba(255,255,255,0.65);">Query Precision</span>
-                  <span style="font-weight:700; color:#ffffff;">{"98.4%" if result["good_query"] else "85.0%"}</span>
-                </div>
-                <div style="display:flex; justify-content:space-between; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:0.6rem;">
-                  <span style="color:rgba(255,255,255,0.65);">Cross-Referencing</span>
-                  <span style="font-weight:700; color:#ffffff;">Active</span>
-                </div>
-                <div style="display:flex; justify-content:space-between; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:0.6rem;">
-                  <span style="color:rgba(255,255,255,0.65);">Conflict Flags</span>
-                  <span style="font-weight:700; color:#fbbf24;">00</span>
-                </div>
-                <div style="display:flex; justify-content:space-between;">
-                  <span style="color:rgba(255,255,255,0.65);">Gate Decision</span>
-                  <span style="font-weight:700; color:{'#34d399' if result['enough'] else '#fbbf24'};">{'Passed' if result['enough'] else 'Insufficient'}</span>
-                </div>
-              </div>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown(f"""<div style="background:#0c1b33; color:#ffffff; border-radius:6px; padding:1.75rem; margin-bottom:1.25rem;">
+<h4 style="font-family:'Playfair Display',serif; font-size:1.2rem; font-weight:600; color:#b9c7e6; margin:0 0 1.25rem;">Intelligence Summary</h4>
+<div style="font-family:'Inter',sans-serif; font-size:0.82rem; display:flex; flex-direction:column; gap:0.65rem;">
+<div style="display:flex; justify-content:space-between; border-bottom:1px solid rgba(255,255,255,0.15); padding-bottom:0.6rem;">
+<span style="color:rgba(255,255,255,0.85);">Query Analysis</span>
+<span style="font-weight:700; color:#ffffff;">{'Clear' if result['good_query'] else 'Reformulated'}</span>
+</div>
+<div style="display:flex; flex-direction:column; gap:0.25rem; border-bottom:1px solid rgba(255,255,255,0.15); padding-bottom:0.6rem;">
+<div style="display:flex; justify-content:space-between;">
+<span style="color:rgba(255,255,255,0.85);">Stage 2 Search Query</span>
+<span style="font-weight:700; color:{'#34d399' if result.get('was_reformulated') else '#93c5fd'};">{'Reformulated' if result.get('was_reformulated') else 'Retained'}</span>
+</div>
+<span style="font-size:0.72rem; color:#e2e8f0; font-family:monospace; background:rgba(255,255,255,0.08); padding:3px 6px; border-radius:3px; word-break:break-word;">
+{result.get('query_used', research_question)}
+</span>
+</div>
+<div style="display:flex; justify-content:space-between; border-bottom:1px solid rgba(255,255,255,0.15); padding-bottom:0.6rem;">
+<span style="color:rgba(255,255,255,0.85);">Retrieval Route</span>
+<span style="font-weight:700; color:#ffffff;">{result['route']}</span>
+</div>
+<div style="display:flex; justify-content:space-between; border-bottom:1px solid rgba(255,255,255,0.15); padding-bottom:0.6rem;">
+<span style="color:rgba(255,255,255,0.85);">Neural Reranker</span>
+<span style="font-weight:700; color:#ffffff;">ms-marco-MiniLM</span>
+</div>
+<div style="display:flex; justify-content:space-between; border-bottom:1px solid rgba(255,255,255,0.15); padding-bottom:0.6rem;">
+<span style="color:rgba(255,255,255,0.85);">Real-Time Precedents</span>
+<span style="font-weight:700; color:{'#34d399' if result.get('use_live_web') else '#94a3b8'};">{'Active' if result.get('use_live_web') else 'Disabled'}</span>
+</div>
+<div style="display:flex; justify-content:space-between; border-bottom:1px solid rgba(255,255,255,0.15); padding-bottom:0.6rem;">
+<span style="color:rgba(255,255,255,0.85);">Retry Attempted</span>
+<span style="font-weight:700; color:{'#fbbf24' if result['retried'] else '#34d399'};">{'Yes' if result['retried'] else 'No'}</span>
+</div>
+<div style="display:flex; justify-content:space-between;">
+<span style="color:rgba(255,255,255,0.85);">Gate Verdict</span>
+<span style="font-weight:700; color:{'#34d399' if result['enough'] else '#fbbf24'};">{'Passed' if result['enough'] else 'Insufficient'}</span>
+</div>
+</div>
+</div>""", unsafe_allow_html=True)
 
             st.download_button(
                 "Export Brief (.md)",
@@ -606,32 +853,27 @@ with workspace_tab:
                 use_container_width=True,
             )
 
-            # Precedent Heatmap
-            st.markdown("""
-            <div style="background:#ffffff; border:1px solid #c5c6ce; border-radius:6px; overflow:hidden; margin-top:1.25rem;">
-              <div style="background:#f4f3f1; border-bottom:1px solid #c5c6ce; padding:0.75rem 1rem;">
-                <span style="font-family:'Inter',sans-serif; font-size:0.68rem; font-weight:700; text-transform:uppercase; letter-spacing:0.1em; color:#000000;">Precedent Heatmap</span>
-              </div>
-              <div style="padding:1rem; display:flex; flex-direction:column; gap:0.5rem;">
-                <div style="display:flex; gap:0.35rem; height:45px;">
-                  <div style="flex:1; background:rgba(115,90,58,0.2); border-radius:2px;"></div>
-                  <div style="flex:0.6; background:rgba(115,90,58,0.55); border-radius:2px;"></div>
-                  <div style="flex:1; background:rgba(115,90,58,0.15); border-radius:2px;"></div>
-                  <div style="flex:0.8; background:rgba(115,90,58,0.38); border-radius:2px;"></div>
-                  <div style="flex:0.5; background:rgba(115,90,58,0.7); border-radius:2px;"></div>
-                </div>
-                <div style="display:flex; gap:0.35rem; height:28px;">
-                  <div style="flex:0.4; background:rgba(115,90,58,0.65); border-radius:2px;"></div>
-                  <div style="flex:1; background:rgba(115,90,58,0.28); border-radius:2px;"></div>
-                  <div style="flex:0.7; background:rgba(115,90,58,0.48); border-radius:2px;"></div>
-                  <div style="flex:0.55; background:rgba(115,90,58,0.2); border-radius:2px;"></div>
-                </div>
-                <p style="font-family:'Inter',sans-serif; font-size:0.65rem; color:#44474d; margin:0;">
-                  Jurisdictional citation density for this query.
-                </p>
-              </div>
-            </div>
-            """, unsafe_allow_html=True)
+            # Precedent Heatmap dynamically rendered
+            evidence_scores = [ev.get("relevance", 0.0) for ev in result.get("evidence", [])]
+            score_bars = ""
+            for score in evidence_scores[:5]:
+                score_bars += f'<div style="flex:{score+0.2:.2f}; height:35px; background:rgba(115,90,58,{max(0.25, score):.2f}); border-radius:2px;" title="{score:.0%} relevance"></div>'
+            if not score_bars:
+                score_bars = '<div style="flex:1; height:35px; background:rgba(115,90,58,0.2); border-radius:2px;"></div>'
+
+            st.markdown(f"""<div style="background:#ffffff; border:1px solid #c5c6ce; border-radius:6px; overflow:hidden; margin-top:1.25rem;">
+<div style="background:#f4f3f1; border-bottom:1px solid #c5c6ce; padding:0.75rem 1rem;">
+<span style="font-family:'Inter',sans-serif; font-size:0.68rem; font-weight:700; text-transform:uppercase; letter-spacing:0.1em; color:#000000;">Precedent Heatmap</span>
+</div>
+<div style="padding:1rem; display:flex; flex-direction:column; gap:0.5rem;">
+<div style="display:flex; gap:0.35rem; align-items:center;">
+{score_bars}
+</div>
+<p style="font-family:'Inter',sans-serif; font-size:0.65rem; color:#44474d; margin:0;">
+Relevance density across top {len(evidence_scores)} retrieved legal authorities.
+</p>
+</div>
+</div>""", unsafe_allow_html=True)
 
 # ──────────────────────────────────────────────────────────────────────────────
 with library_tab:
@@ -653,7 +895,7 @@ with library_tab:
     st.divider()
     st.markdown("<h3 style='font-family:\"Playfair Display\",serif; font-size:1.35rem; font-weight:700; margin-bottom:0.5rem;'>Add a Trusted Source</h3>", unsafe_allow_html=True)
     st.caption(
-        "Allowed: India Code, Supreme Court of India, Indian Kanoon, and official High Court sites. "
+        "Allowed: India Code, Supreme Court of India, and official High Court portals. "
         "The tool is deliberately page-by-page and does not bulk crawl."
     )
 

@@ -174,6 +174,13 @@ def ingest_pdf(
         for record in records:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
+    if records:
+        try:
+            from vector_store import get_vector_store
+            get_vector_store().add_records(records, persist=True)
+        except Exception:
+            pass
+
     manifest[file_hash] = {
         "filename": filename,
         "chunk_count": len(records),
