@@ -37,4 +37,5 @@ data/faiss.index
 data/metadata.pkl
 
 # Optional local runtime files
-*.log
+*.logNyayaRoute_Chat_History.md
+NyayaRoute_Chat_History.md
