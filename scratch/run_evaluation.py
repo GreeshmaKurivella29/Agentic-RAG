@@ -99,7 +99,7 @@ def evaluate(sample_size: int = 5, seed: int | None = None):
     }
 
     print("=" * 95)
-    print("NYAYAROUTE: INDIC-LEGAL-QA EMPIRICAL BENCHMARK EVALUATION (Slide 13)")
+    print("NYAYAROUTE: INDIC-LEGAL-QA EMPIRICAL BENCHMARK EVALUATION")
     print("=" * 95)
     print(f"Dataset: IndicLegalQA ({total_available:,} Supreme Court QA pairs)")
     print(f"Sample Mode: Dynamic Random Sampling ({sample_size} QA pairs per run, seed={seed or 'random'})\n")
@@ -200,7 +200,7 @@ def evaluate(sample_size: int = 5, seed: int | None = None):
 
     # Print Formatted Results Table for Slide 13
     print("\n" + "=" * 95)
-    print("SLIDE 13 BENCHMARK RESULTS MATRIX (INDIC-LEGAL-QA)")
+    print("BENCHMARK RESULTS MATRIX (INDIC-LEGAL-QA)")
     print("=" * 95)
     print(f"{'Category':<15} | {'Metric':<14} | {'BM25':<8} | {'Dense':<8} | {'Hybrid':<8} | {'Adaptive Agentic RAG':<20}")
     print("-" * 95)

@@ -79,7 +79,7 @@ Add it from the Source library, then re-run your question. The ingestor intentio
 - **Evidence gate:** requires multiple relevant chunks and a minimum reranker score before generation; the retry path expands the query and search depth.
 - **Grounded answer:** the model is instructed to use only supplied context and cite each material proposition as `[S1]`, `[S2]`, etc.
 
-## 📊 Empirical Evaluation & Benchmarking (IndicLegalQA)
+## Empirical Evaluation & Benchmarking (IndicLegalQA)
 
 NyayaRoute implements the rigorous **Slide 13 Evaluation Plan** to benchmark 4 core retrieval and QA architectures against real Indian Supreme Court jurisprudence:
 1. **BM25 Sparse Retrieval** (Inverted-index lexical keyword matching)
@@ -107,11 +107,11 @@ python scratch/run_evaluation.py --sample 10
 python scratch/run_evaluation.py --sample 5 --seed 42
 ```
 
-### Benchmark Results Matrix (Slide 13)
+### Benchmark Results Matrix 
 
 ```text
 ===============================================================================================
-SLIDE 13 BENCHMARK RESULTS MATRIX (INDIC-LEGAL-QA)
+BENCHMARK RESULTS MATRIX (INDIC-LEGAL-QA)
 ===============================================================================================
 Category        | Metric         | BM25     | Dense    | Hybrid   | Adaptive Agentic RAG
 -----------------------------------------------------------------------------------------------
