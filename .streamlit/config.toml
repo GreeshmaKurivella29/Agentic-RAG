@@ -1,7 +1,16 @@
 [theme]
 base = "light"
-primaryColor = "#205cba"
-backgroundColor = "#f7f8fc"
+primaryColor = "#735a3a"
+backgroundColor = "#faf9f7"
 secondaryBackgroundColor = "#ffffff"
-textColor = "#0f172a"
+textColor = "#1a1c1b"
 font = "sans serif"
+borderColor = "#c5c6ce"
+
+[browser]
+gatherUsageStats = false
+
+[server]
+headless = true
+port = 8501
+showEmailPrompt = false

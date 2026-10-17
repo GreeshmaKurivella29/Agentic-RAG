@@ -1,4 +1,46 @@
-.venv/
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+
+# Virtual environment
+.venv/
+.venv*/
+venv/
+env/
+
+# Environment variables / secrets
 .env
+.env.*
+
+# Streamlit
+.streamlit/secrets.toml
+.streamlit/credentials.toml
+
+# Backups
+*.bak
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python tooling
+.pytest_cache/
+.mypy_cache/
+
+# Hugging Face / ML caches
+.cache/
+huggingface/
+hf_cache/
+
+# Local vector indexes
+data/faiss.index
+data/metadata.pkl
+
+# Optional local runtime files
+*.logNyayaRoute_Chat_History.md
+NyayaRoute_Chat_History.md
