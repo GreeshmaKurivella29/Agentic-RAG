@@ -17,11 +17,51 @@ import math
 import os
 from pathlib import Path
 import re
+import sys
 import time
 from typing import Any
 
+# Ensure local .venv site-packages are accessible even if run with global python
+_venv_site = Path(__file__).resolve().parent / ".venv" / "Lib" / "site-packages"
+if _venv_site.exists() and str(_venv_site) not in sys.path:
+    sys.path.insert(0, str(_venv_site))
+
 import numpy as np
-from rank_bm25 import BM25Okapi
+
+try:
+    from rank_bm25 import BM25Okapi
+except ImportError:
+    class BM25Okapi:  # type: ignore
+        """Self-contained fallback BM25 implementation if rank_bm25 is not installed."""
+        def __init__(self, corpus: list[list[str]], k1: float = 1.5, b: float = 0.75):
+            self.corpus = corpus
+            self.doc_len = [len(doc) for doc in corpus]
+            self.avgdl = sum(self.doc_len) / max(1, len(corpus))
+            self.doc_freqs = []
+            for doc in corpus:
+                frequencies: dict[str, int] = {}
+                for word in doc:
+                    frequencies[word] = frequencies.get(word, 0) + 1
+                self.doc_freqs.append(frequencies)
+            self.nd = len(corpus)
+            self.k1 = k1
+            self.b = b
+
+        def get_scores(self, query: list[str]) -> np.ndarray:
+            scores = np.zeros(self.nd)
+            for q in query:
+                df = sum(1 for freqs in self.doc_freqs if q in freqs)
+                if df == 0:
+                    continue
+                idf = math.log((self.nd - df + 0.5) / (df + 0.5) + 1)
+                for i, freqs in enumerate(self.doc_freqs):
+                    tf = freqs.get(q, 0)
+                    if tf > 0:
+                        num = tf * (self.k1 + 1)
+                        denom = tf + self.k1 * (1 - self.b + self.b * (self.doc_len[i] / max(1e-5, self.avgdl)))
+                        scores[i] += idf * (num / denom)
+            return scores
+
 from vector_store import get_vector_store
 
 STOPWORDS = {
