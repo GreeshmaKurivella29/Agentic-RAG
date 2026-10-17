@@ -13,7 +13,10 @@ def get_embedder():
 
     if _model is None:
         from sentence_transformers import SentenceTransformer
-        _model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+        try:
+            _model = SentenceTransformer(EMBEDDING_MODEL_NAME, local_files_only=True)
+        except Exception:
+            _model = SentenceTransformer(EMBEDDING_MODEL_NAME)
 
     return _model
 

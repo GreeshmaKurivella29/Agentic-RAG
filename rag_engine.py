@@ -26,6 +26,15 @@ _venv_site = Path(__file__).resolve().parent / ".venv" / "Lib" / "site-packages"
 if _venv_site.exists() and str(_venv_site) not in sys.path:
     sys.path.insert(0, str(_venv_site))
 
+try:
+    import certifi
+    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
+    # Enable offline loading for cached HuggingFace models to eliminate SSL retry latency
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+except Exception:
+    pass
+
 import numpy as np
 
 try:
@@ -337,10 +346,14 @@ def reformulate_query(question: str, analysis: QueryAnalysis) -> tuple[str, bool
 
     # Common Indian legal abbreviation expansions
     expansions = [
+        (r"\bart(?:icle)?\s*13\b", "Article 13 of the Constitution of India (laws inconsistent with or in derogation of fundamental rights)"),
+        (r"\bart(?:icle)?\s*12\b", "Article 12 of the Constitution of India (definition of the State)"),
+        (r"\bart(?:icle)?\s*14\b", "Article 14 of the Constitution of India (equality before law and equal protection of laws)"),
         (r"\bart(?:icle)?\s*21\b", "Article 21 of the Constitution of India (protection of life and personal liberty)"),
         (r"\bart(?:icle)?\s*19\b", "Article 19 of the Constitution of India (fundamental freedoms and reasonable restrictions)"),
         (r"\bart(?:icle)?\s*32\b", "Article 32 of the Constitution of India (writ jurisdiction Supreme Court)"),
         (r"\bart(?:icle)?\s*226\b", "Article 226 of the Constitution of India (High Court writ jurisdiction)"),
+        (r"\bart(?:icle)?\s*(\d+[A-Za-z]?)\b", r"Article \1 of the Constitution of India"),
         (r"\bsec(?:tion)?\s*438\s*(?:crpc)?\b", "Section 438 Code of Criminal Procedure, 1973 (direction for grant of bail to person apprehending arrest - anticipatory bail)"),
         (r"\bsec(?:tion)?\s*439\s*(?:crpc)?\b", "Section 439 Code of Criminal Procedure, 1973 (special powers of High Court or Court of Session regarding bail)"),
         (r"\bsec(?:tion)?\s*482\s*(?:crpc)?\b", "Section 482 Code of Criminal Procedure, 1973 (inherent powers of High Court to prevent abuse of process or secure ends of justice)"),
@@ -355,6 +368,7 @@ def reformulate_query(question: str, analysis: QueryAnalysis) -> tuple[str, bool
         if re.search(pattern, lowered):
             reformulated = re.sub(pattern, replacement, reformulated, flags=re.IGNORECASE)
             matched = True
+            break
 
     if not matched:
         reformulated = f"Indian law statutory provisions and judicial precedents regarding: {question}"
