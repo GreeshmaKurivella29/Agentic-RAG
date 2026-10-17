@@ -88,10 +88,25 @@ class VectorStore:
         if FAISS_INDEX_PATH.exists() and METADATA_PATH.exists():
             faiss_store = FaissStore.load(FAISS_INDEX_PATH, dim)
             metadata_store = MetadataStore.load(METADATA_PATH)
+            return cls(faiss_store, metadata_store)
         else:
             faiss_store = FaissStore.create(dim)
             metadata_store = MetadataStore.create()
-        return cls(faiss_store, metadata_store)
+            store = cls(faiss_store, metadata_store)
+            try:
+                import json
+                initial_records = []
+                for p in ("data/demo_legal_corpus.jsonl", "data/legal_corpus.jsonl", "data/pdf_legal_corpus.jsonl"):
+                    f = Path(p)
+                    if f.exists():
+                        for line in f.read_text(encoding="utf-8").splitlines():
+                            if line.strip():
+                                initial_records.append(json.loads(line))
+                if initial_records:
+                    store.add_records(initial_records, persist=True)
+            except Exception:
+                pass
+            return store
 
 
 # ── Process-wide singleton ──────────────────────────────────────────────
