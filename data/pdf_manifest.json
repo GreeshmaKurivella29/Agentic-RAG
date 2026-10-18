@@ -1,0 +1,16 @@
+{
+  "7881536e07458e616f6c91b841814cc95b7084edc7ded8a0897a4beaec701351": {
+    "filename": "ITA.pdf",
+    "chunk_count": 19,
+    "structure_kind": "constitution",
+    "source": "India Code",
+    "ingested_at": "2026-10-18T08:55:47.151588+00:00"
+  },
+  "dde7e6e59d48b2fbcafd0cb26fb219c2f68897c2c790b10a4ee9af14fa217354": {
+    "filename": "CentralUniversityAct.pdf",
+    "chunk_count": 110,
+    "structure_kind": "act",
+    "source": "Uploaded PDF",
+    "ingested_at": "2026-10-18T09:11:12.834695+00:00"
+  }
+}

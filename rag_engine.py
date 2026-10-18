@@ -130,6 +130,8 @@ PRIMARY_SOURCES = {
     "High Court",
     "Gazette of India",
     "Constitution of India",
+    "Uploaded PDF",
+    "Law Commission of India",
 }
 
 
@@ -590,7 +592,10 @@ def assess_evidence_sufficiency(
         }
 
     best = evidence[0]
-    primary_items = [e for e in evidence if e.source in PRIMARY_SOURCES]
+    primary_items = [
+        e for e in evidence
+        if e.source in PRIMARY_SOURCES or (e.url and e.url.startswith("local-pdf://"))
+    ]
     top_prob = best.cross_encoder_prob
 
     # Rule 1: Cross-Encoder neural relevance model is the primary arbiter of topicality.
@@ -837,7 +842,10 @@ def run_agent(
     candidates = _safe_retrieve(retrieval_query, route, 12)
     effective_allowed = (allowed_sources | {"Indian Kanoon"}) if (allowed_sources and use_live_web) else allowed_sources
     if effective_allowed:
-        candidates = [item for item in candidates if item.source in effective_allowed]
+        candidates = [
+            item for item in candidates
+            if item.source in effective_allowed or (item.url and item.url.startswith("local-pdf://"))
+        ]
 
     # ── STAGE 5: Assess evidence sufficiency before allowing LLM generation ──
     enough, evidence_reason, metrics = assess_evidence_sufficiency(candidates, analysis)

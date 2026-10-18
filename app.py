@@ -9,6 +9,8 @@ from pathlib import Path
 import importlib
 import streamlit as st
 from dotenv import load_dotenv
+
+
 try:
     import certifi
     os.environ.setdefault("SSL_CERT_FILE", certifi.where())
@@ -25,6 +27,7 @@ from rag_engine import LegalRetriever, load_corpus, run_agent, source_summary
 from trusted_sources import ingest_trusted_url
 from pdf_ingestor import DuplicatePDFError, ingest_pdf, preview_pdf
 from pdf_parser import PDFIngestionError
+from vector_store import reset_vector_store_cache
 load_dotenv()
 
 st.set_page_config(
@@ -792,8 +795,8 @@ st.markdown(f"""
     }}
 
     /* 3. Primary Navy "Choose PDF Files" Button (Middle-Bottom) */
-    .st-key-kb_upload_card [data-testid="stFileUploader"] section button,
-    .kb-card [data-testid="stFileUploader"] section button {{
+    .st-key-kb_upload_card [data-testid="stFileUploaderDropzone"] button:not([aria-label]),
+    .kb-card [data-testid="stFileUploaderDropzone"] button:not([aria-label]) {{
         background: #102442 !important;
         border: 1px solid #102442 !important;
         border-radius: 6px !important;
@@ -809,21 +812,21 @@ st.markdown(f"""
         cursor: pointer !important;
         position: relative !important;
     }}
-    .st-key-kb_upload_card [data-testid="stFileUploader"] section button:hover,
-    .kb-card [data-testid="stFileUploader"] section button:hover {{
+    .st-key-kb_upload_card [data-testid="stFileUploaderDropzone"] button:not([aria-label]):hover,
+    .kb-card [data-testid="stFileUploaderDropzone"] button:not([aria-label]):hover {{
         background: #18355c !important;
         border-color: #A8752D !important;
         box-shadow: 0 4px 14px rgba(16, 36, 66, 0.32) !important;
         transform: translateY(-1px);
     }}
-    /* Hide all child elements inside the button so NO text leaks or duplicates */
-    .st-key-kb_upload_card [data-testid="stFileUploader"] section button *,
-    .kb-card [data-testid="stFileUploader"] section button * {{
+    /* Hide all child elements inside ONLY the browse button so NO text leaks or duplicates */
+    .st-key-kb_upload_card [data-testid="stFileUploaderDropzone"] button:not([aria-label]) *,
+    .kb-card [data-testid="stFileUploaderDropzone"] button:not([aria-label]) * {{
         display: none !important;
     }}
     /* Render exactly ONE single clean label */
-    .st-key-kb_upload_card [data-testid="stFileUploader"] section button::after,
-    .kb-card [data-testid="stFileUploader"] section button::after {{
+    .st-key-kb_upload_card [data-testid="stFileUploaderDropzone"] button:not([aria-label])::after,
+    .kb-card [data-testid="stFileUploaderDropzone"] button:not([aria-label])::after {{
         content: "Choose PDF Files" !important;
         display: block !important;
         font-family: 'Inter', sans-serif !important;
@@ -833,6 +836,41 @@ st.markdown(f"""
         letter-spacing: 0.01em !important;
         white-space: nowrap !important;
         line-height: 1 !important;
+    }}
+
+    /* Keep all secondary icon buttons (delete, add more files) completely unstyled from Choose PDF Files */
+    .st-key-kb_upload_card [data-testid="stFileUploaderDropzone"] button[aria-label],
+    .kb-card [data-testid="stFileUploaderDropzone"] button[aria-label],
+    .st-key-kb_upload_card [data-testid="stFileUploader"] button[aria-label],
+    .kb-card [data-testid="stFileUploader"] button[aria-label] {{
+        all: unset !important;
+        cursor: pointer !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        color: #718096 !important;
+        padding: 4px 8px !important;
+        border-radius: 4px !important;
+    }}
+    .st-key-kb_upload_card [data-testid="stFileUploaderDropzone"] button[aria-label]:hover,
+    .kb-card [data-testid="stFileUploaderDropzone"] button[aria-label]:hover,
+    .st-key-kb_upload_card [data-testid="stFileUploader"] button[aria-label]:hover,
+    .kb-card [data-testid="stFileUploader"] button[aria-label]:hover {{
+        background: #EDF2F7 !important;
+        color: #C53030 !important;
+    }}
+    .st-key-kb_upload_card [data-testid="stFileUploaderDropzone"] button[aria-label]::after,
+    .kb-card [data-testid="stFileUploaderDropzone"] button[aria-label]::after,
+    .st-key-kb_upload_card [data-testid="stFileUploader"] button[aria-label]::after,
+    .kb-card [data-testid="stFileUploader"] button[aria-label]::after {{
+        display: none !important;
+        content: "" !important;
+    }}
+    .st-key-kb_upload_card [data-testid="stFileUploaderDropzone"] button[aria-label] *,
+    .kb-card [data-testid="stFileUploaderDropzone"] button[aria-label] *,
+    .st-key-kb_upload_card [data-testid="stFileUploader"] button[aria-label] *,
+    .kb-card [data-testid="stFileUploader"] button[aria-label] * {{
+        display: inline-block !important;
     }}
 
     /* 4. Small File Restriction Label (Bottom) */
@@ -1815,22 +1853,22 @@ with st.sidebar:
     st.session_state["selected_sources"] = selected_sources_sb
     st.caption("Use the source filter to focus statutory research or case-law research.")
     
-    st.divider()
-    st.metric("Local Legal Chunks", len(corpus))
-    st.caption(f"{len(source_summary(corpus))} source page(s) indexed")
+    # st.divider()
+    # st.metric("Local Legal Chunks", len(corpus))
+    # st.caption(f"{len(source_summary(corpus))} source page(s) indexed")
     
-    with st.expander("AI Synthesis Mode", expanded=not bool(os.getenv("GROQ_API_KEY"))):
-        with st.form("groq_api_key_form"):
-            api_key_input = st.text_input(
-                "Groq API Key (Optional)",
-                value=os.getenv("GROQ_API_KEY", ""),
-                type="password",
-                help="Enter your Groq key for generative synthesis with Groq LLMs. If omitted, local extractive legal synthesis is used automatically.",
-            )
-            apply_api_key = st.form_submit_button("Apply API key")
-        if apply_api_key and api_key_input and api_key_input != os.getenv("GROQ_API_KEY"):
-            os.environ["GROQ_API_KEY"] = api_key_input
-            st.rerun()
+    # with st.expander("AI Synthesis Mode", expanded=not bool(os.getenv("GROQ_API_KEY"))):
+    #     with st.form("groq_api_key_form"):
+    #         api_key_input = st.text_input(
+    #             "Groq API Key (Optional)",
+    #             value=os.getenv("GROQ_API_KEY", ""),
+    #             type="password",
+    #             help="Enter your Groq key for generative synthesis with Groq LLMs. If omitted, local extractive legal synthesis is used automatically.",
+    #         )
+    #         apply_api_key = st.form_submit_button("Apply API key")
+    #     if apply_api_key and api_key_input and api_key_input != os.getenv("GROQ_API_KEY"):
+    #         os.environ["GROQ_API_KEY"] = api_key_input
+    #         st.rerun()
 
     if os.getenv("GROQ_API_KEY"):
         st.success(f"Generative LLM Active · {os.getenv('GROQ_MODEL', 'qwen/qwen3.8-27b')}")
@@ -2568,183 +2606,205 @@ elif selected_page == "Knowledge Base":
         st.markdown('<div class="kb-outer-container" style="margin-top: 1.5rem;">', unsafe_allow_html=True)
 
         for uploaded_file in uploaded_files:
-
-            st.markdown("---")
-            st.markdown(f"### {uploaded_file.name}")
-
             file_bytes = uploaded_file.getvalue()
+            import hashlib
+            file_hash = hashlib.sha256(file_bytes).hexdigest()[:16]
 
-            # ── Preview ──────────────────────────────────────────────────────
+            # ── Processing Loader (No buttons shown during or before ingestion) ──
+            already_indexed = False
+
+            if f"indexed_result_{file_hash}" not in st.session_state:
+                with st.status(f"⚡ Integrating '{uploaded_file.name}' into RAG Knowledge Base…", expanded=True) as status_box:
+                    st.write("📄 **1. Extracting Document Pages:** Reading and cleaning raw text via PyPDF…")
+                    try:
+                        st.write("⚖️ **2. Structural Legal Chunking:** Detecting Parts, Chapters, Sections, and Articles…")
+                        ingest_res = ingest_pdf(file_bytes, uploaded_file.name)
+
+                        st.write("🧠 **3. Neural Embedding & FAISS:** Indexing 384-dimensional dense vectors…")
+                        reset_retriever()
+                        reset_vector_store_cache()
+
+                        st.write("🔄 **4. Retriever Synchronization:** Refreshing BM25 lexical index and RAG cache…")
+                        if "selected_sources" in st.session_state:
+                            st.session_state["selected_sources"] = sorted(
+                                list(set(st.session_state["selected_sources"]) | {ingest_res.doc_profile.source})
+                            )
+
+                        st.session_state[f"indexed_result_{file_hash}"] = {
+                            "filename": ingest_res.filename,
+                            "chunks_created": ingest_res.chunks_created,
+                            "pages_used": ingest_res.pages_used,
+                            "pages_total": ingest_res.pages_total,
+                            "is_duplicate": False,
+                        }
+                        status_box.update(label=f"✓ '{uploaded_file.name}' Successfully Integrated into Knowledge Base!", state="complete", expanded=False)
+                    except DuplicatePDFError:
+                        already_indexed = True
+                        st.session_state[f"indexed_result_{file_hash}"] = {
+                            "filename": uploaded_file.name,
+                            "is_duplicate": True,
+                        }
+                        status_box.update(label=f"ℹ️ '{uploaded_file.name}' is already active in Knowledge Base", state="complete", expanded=False)
+                    except Exception as exc:
+                        status_box.update(label=f"❌ Error indexing '{uploaded_file.name}'", state="error", expanded=True)
+                        st.error(f"Could not process PDF: {exc}")
+                        continue
+            else:
+                cached_info = st.session_state[f"indexed_result_{file_hash}"]
+                already_indexed = cached_info.get("is_duplicate", False)
+
+            # ── Once Done: Display Contribution Banner ──────────────────────────
+            if not already_indexed:
+                st.markdown(
+                    f"""
+                    <div style="background: linear-gradient(135deg, #FFFDF9 0%, #FBF8F1 100%); border: 1.5px solid #D8BD91; border-left: 4.5px solid #A8752D; border-radius: 8px; padding: 1.3rem 1.6rem; margin: 1.2rem 0; box-shadow: 0 3px 12px rgba(168, 117, 45, 0.09);">
+                        <div style="display:flex; align-items:flex-start; gap: 1rem;">
+                            <span style="font-size: 2rem; line-height: 1;">🎉</span>
+                            <div>
+                                <div style="font-family:'Playfair Display', Georgia, serif; font-size:1.25rem; font-weight:700; color:#102442; margin-bottom:0.35rem;">
+                                    Thank You for Contributing to the NyayaRoute Knowledge Base!
+                                </div>
+                                <div style="font-family:'Inter', sans-serif; font-size:0.9rem; color:#4A5568; line-height:1.5;">
+                                    <strong>{uploaded_file.name}</strong> has been successfully parsed, structurally chunked, and embedded into the permanent RAG vector store. The AI research agent will now actively cite and ground legal reasoning in this knowledge source.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    f"""
+                    <div style="background: #FBF8F1; border: 1.5px solid #D8BD91; border-left: 4.5px solid #102442; border-radius: 8px; padding: 1.2rem 1.5rem; margin: 1.2rem 0;">
+                        <div style="display:flex; align-items:flex-start; gap: 0.9rem;">
+                            <span style="font-size: 1.8rem; line-height: 1;">📚</span>
+                            <div>
+                                <div style="font-family:'Playfair Display', Georgia, serif; font-size:1.2rem; font-weight:700; color:#102442; margin-bottom:0.3rem;">
+                                    Knowledge Source Active & Grounded
+                                </div>
+                                <div style="font-family:'Inter', sans-serif; font-size:0.88rem; color:#4A5568; line-height:1.5;">
+                                    <strong>{uploaded_file.name}</strong> is already permanently preserved in the RAG vector corpus. All of its provisions are available for immediate research inquiries.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            # ── Extracted Document Information & Structural Chunks ───────────────
             try:
                 parsed, profile, structure_kind, chunks = preview_pdf(
                     file_bytes,
                     uploaded_file.name,
                 )
 
-                st.success("PDF successfully parsed.")
-
-                # Document metadata
-                st.markdown("#### Detected metadata")
+                st.markdown(f"#### 📋 Extracted Document Information — `{uploaded_file.name}`")
 
                 metadata_col1, metadata_col2 = st.columns(2)
-
                 with metadata_col1:
-                    st.write(f"**Document kind:** {profile.kind}")
-                    st.write(f"**Act:** {profile.act}")
-                    st.write(f"**Year:** {profile.year}")
+                    st.write(f"**Document Kind:** {profile.kind.title()}")
+                    st.write(f"**Identified Act / Title:** {profile.act or uploaded_file.name}")
+                    st.write(f"**Year:** {profile.year or 'Not specified'}")
 
                 with metadata_col2:
-                    st.write(f"**Source:** {profile.source}")
-                    st.write(f"**Court:** {profile.court}")
-                    st.write(f"**Structure:** {structure_kind}")
+                    st.write(f"**Source Category:** {profile.source}")
+                    st.write(f"**Jurisdiction / Court:** {profile.court or 'National / Central'}")
+                    st.write(f"**Structure Hierarchy:** {structure_kind.title()}")
 
-                # PDF statistics
                 stat1, stat2, stat3 = st.columns(3)
-
                 with stat1:
-                    st.metric("Pages", parsed.num_pages_total)
-
+                    st.metric("Total Pages", parsed.num_pages_total)
                 with stat2:
-                    st.metric("Pages used", parsed.num_pages_used)
-
+                    st.metric("Pages Utilized", parsed.num_pages_used)
                 with stat3:
-                    st.metric("Chunks", len(chunks))
+                    st.metric("Chunks Generated", len(chunks))
 
-                # ── Metadata preview ─────────────────────────────────────────
-                with st.expander("Preview extracted chunks"):
-
-                    for i, chunk in enumerate(chunks[:5], start=1):
-
-                        st.markdown(f"**Chunk {i}**")
-
-                        st.write(
-                            f"Structure: {chunk.structure_kind}"
-                        )
-
+                with st.expander("🔍 Preview Extracted Structural Chunks"):
+                    for i, chunk in enumerate(chunks[:8], start=1):
+                        st.markdown(f"**Chunk {i}** — *{chunk.structure_kind.title()}*")
                         if chunk.part:
-                            st.write(f"Part: {chunk.part}")
-
+                            st.caption(f"Part: {chunk.part}")
                         if chunk.chapter:
-                            st.write(f"Chapter: {chunk.chapter}")
-
+                            st.caption(f"Chapter: {chunk.chapter}")
                         if chunk.article:
-                            st.write(f"Article: {chunk.article}")
-
+                            st.caption(f"Article: {chunk.article}")
                         if chunk.section:
-                            st.write(f"Section: {chunk.section}")
-
+                            st.caption(f"Section: {chunk.section}")
                         if chunk.heading:
-                            st.write(f"Heading: {chunk.heading}")
-
+                            st.caption(f"Heading: {chunk.heading}")
                         st.text_area(
-                            "Text",
+                            "Content",
                             chunk.text,
-                            height=150,
-                            key=f"preview_{uploaded_file.name}_{i}",
+                            height=120,
+                            key=f"chunk_preview_{uploaded_file.name}_{i}",
+                            disabled=True,
                         )
-
                         st.markdown("---")
 
-                # ── Classification override ─────────────────────────────────
-                with st.expander("Override detected classification (optional)"):
-
-                    source_override = st.text_input(
-                        "Source",
-                        value=profile.source,
-                        key=f"source_{uploaded_file.name}",
-                    )
-
-                    act_override = st.text_input(
-                        "Act / document name",
-                        value=profile.act,
-                        key=f"act_{uploaded_file.name}",
-                    )
-
-                # ── Index button ────────────────────────────────────────────
-                if st.button(
-                    f"Index {uploaded_file.name}",
-                    type="primary",
-                    key=f"index_{uploaded_file.name}",
-                ):
-
-                    try:
-
-                        progress = st.progress(0)
-
-                        progress.progress(20)
-
-                        result = ingest_pdf(
-                            file_bytes,
-                            uploaded_file.name,
-                            source_override=source_override or None,
-                            act_override=act_override or None,
-                        )
-
-                        progress.progress(100)
-
-                        st.success(
-                            f"Successfully indexed {result.filename}: "
-                            f"{result.chunks_created} chunks created."
-                        )
-
-                        # Results
-                        result_col1, result_col2, result_col3 = st.columns(3)
-
-                        with result_col1:
-                            st.metric(
-                                "Chunks created",
-                                result.chunks_created,
-                            )
-
-                        with result_col2:
-                            st.metric(
-                                "Duplicates skipped",
-                                result.chunks_skipped_duplicate,
-                            )
-
-                        with result_col3:
-                            st.metric(
-                                "Pages used",
-                                result.pages_used,
-                            )
-
-                        if result.chunks_created == 0:
-
-                            st.info(
-                                "That PDF was already indexed; no new chunks were added."
-                            )
-
-                    except DuplicatePDFError:
-
-                        st.warning(
-                            "This PDF has already been indexed."
-                        )
-
-                    except PDFIngestionError as exc:
-
-                        st.error(
-                            f"Could not process this PDF: {exc}"
-                        )
-
-                    except Exception as exc:
-
-                        st.error(
-                            f"Unexpected indexing error: {exc}"
-                        )
-
-            except PDFIngestionError as exc:
-
-                st.error(
-                    f"Could not read {uploaded_file.name}: {exc}"
-                )
+                # ── Action Navigation: Direct Jump to Research Workspace ────────
+                col_btn1, col_btn2 = st.columns([2, 1], gap="medium")
+                with col_btn1:
+                    if st.button("⚖️ Query this Document in Research Workspace", type="primary", key=f"nav_to_research_{uploaded_file.name}"):
+                        st.session_state["main_navigation"] = "Research workspace"
+                        st.rerun()
+                with col_btn2:
+                    if st.button("🔄 Refresh Local Corpus View", key=f"refresh_view_{uploaded_file.name}"):
+                        st.rerun()
 
             except Exception as exc:
-
-                st.error(
-                    f"Could not preview {uploaded_file.name}: {exc}"
-                )
+                st.error(f"Could not load details for {uploaded_file.name}: {exc}")
 
         st.markdown('</div>', unsafe_allow_html=True)
+
+    # ── Display Persisted Knowledge Base Documents ────────────────────────────
+    st.markdown('<div class="kb-outer-container" style="margin-top: 2rem;">', unsafe_allow_html=True)
+    st.markdown("### 📚 Indexed Documents in Knowledge Base")
+    st.caption("All documents below are persistently saved in the local JSONL & FAISS vector corpus and actively queried by the legal RAG agent.")
+
+    from pathlib import Path
+    import json
+    pdf_corpus_file = Path("data/pdf_legal_corpus.jsonl")
+    if pdf_corpus_file.exists():
+        pdf_docs = {}
+        for line in pdf_corpus_file.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                try:
+                    r = json.loads(line)
+                    fn = r.get("filename") or "Unknown Document"
+                    if fn not in pdf_docs:
+                        pdf_docs[fn] = {
+                            "filename": fn,
+                            "title": r.get("act") or r.get("title") or fn,
+                            "source": r.get("source") or "Uploaded PDF",
+                            "kind": r.get("structure_kind") or r.get("kind") or "Document",
+                            "chunks": 0,
+                            "ingested_at": r.get("ingested_at", "")[:10] if r.get("ingested_at") else "N/A",
+                        }
+                    pdf_docs[fn]["chunks"] += 1
+                except Exception:
+                    continue
+        if pdf_docs:
+            doc_rows = []
+            for doc in pdf_docs.values():
+                doc_rows.append({
+                    "Document / File": doc["filename"],
+                    "Detected Title / Act": doc["title"],
+                    "Source Category": doc["source"],
+                    "Structure": doc["kind"].title(),
+                    "Indexed Chunks": doc["chunks"],
+                    "Date Ingested": doc["ingested_at"],
+                })
+            try:
+                st.dataframe(doc_rows, width="stretch", hide_index=True)
+            except Exception:
+                st.dataframe(doc_rows, use_container_width=True, hide_index=True)
+        else:
+            st.info("No PDF documents have been indexed yet. Upload a PDF above to expand the knowledge base.")
+    else:
+        st.info("No PDF documents have been indexed yet. Upload a PDF above to expand the knowledge base.")
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # ──────────────────────────────────────────────────────────────────────────────
 else:

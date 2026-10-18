@@ -178,8 +178,9 @@ def ingest_pdf(
         try:
             from vector_store import get_vector_store
             get_vector_store().add_records(records, persist=True)
-        except Exception:
-            pass
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Vector store indexing failed for %s: %s", filename, exc)
 
     manifest[file_hash] = {
         "filename": filename,
